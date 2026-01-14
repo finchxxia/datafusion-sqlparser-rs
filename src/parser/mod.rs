@@ -16491,6 +16491,10 @@ impl<'a> Parser<'a> {
                 insert_alias,
                 settings,
                 format_clause,
+                insert_first: false,
+                multi_table_into_clauses: vec![],
+                multi_table_when_clauses: vec![],
+                multi_table_else_clause: None,
             }))
         }
     }
