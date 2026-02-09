@@ -118,8 +118,6 @@ pub struct Insert {
 
 impl Display for Insert {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let is_multi_table = self.multi_table_insert_type.is_some();
-
         // SQLite OR conflict has a special format: INSERT OR ... INTO table_name
         if let Some(on_conflict) = self.or {
             let table_name: String = if let Some(alias) = &self.table_alias {
@@ -159,39 +157,36 @@ impl Display for Insert {
                 write!(f, " TABLE")?;
             }
 
-            if !is_multi_table {
-                let table_name = if let Some(alias) = &self.table_alias {
-                    format!("{0} AS {alias}", self.table)
-                } else {
-                    self.table.to_string()
-                };
+            let table_name = if let Some(alias) = &self.table_alias {
+                format!("{0} AS {alias}", self.table)
+            } else {
+                self.table.to_string()
+            };
+            if !table_name.is_empty() {
                 write!(f, " {table_name} ")?;
             }
         }
 
-        if !is_multi_table && !self.columns.is_empty() {
+        if !self.columns.is_empty() {
             write!(f, "({})", display_comma_separated(&self.columns))?;
             SpaceOrNewline.fmt(f)?;
         }
-        if !is_multi_table {
-            if let Some(ref parts) = self.partitioned {
-                if !parts.is_empty() {
-                    write!(f, "PARTITION ({})", display_comma_separated(parts))?;
-                    SpaceOrNewline.fmt(f)?;
-                }
+
+        if let Some(ref parts) = self.partitioned {
+            if !parts.is_empty() {
+                write!(f, "PARTITION ({})", display_comma_separated(parts))?;
+                SpaceOrNewline.fmt(f)?;
             }
         }
 
-        if !is_multi_table && !self.after_columns.is_empty() {
+        if !self.after_columns.is_empty() {
             write!(f, "({})", display_comma_separated(&self.after_columns))?;
             SpaceOrNewline.fmt(f)?;
         }
 
-        if !is_multi_table {
-            if let Some(settings) = &self.settings {
-                write!(f, "SETTINGS {}", display_comma_separated(settings))?;
-                SpaceOrNewline.fmt(f)?;
-            }
+        if let Some(settings) = &self.settings {
+            write!(f, "SETTINGS {}", display_comma_separated(settings))?;
+            SpaceOrNewline.fmt(f)?;
         }
 
         for into_clause in &self.multi_table_into_clauses {
@@ -213,48 +208,40 @@ impl Display for Insert {
             }
         }
 
-        if is_multi_table {
-            if let Some(source) = &self.source {
+        if let Some(source) = &self.source {
+            if !self.multi_table_into_clauses.is_empty()
+                || !self.multi_table_when_clauses.is_empty()
+            {
                 SpaceOrNewline.fmt(f)?;
-                source.fmt(f)?;
             }
-        } else {
-            if let Some(source) = &self.source {
-                source.fmt(f)?;
-            } else if !self.assignments.is_empty() {
-                write!(f, "SET")?;
-                indented_list(f, &self.assignments)?;
-            } else if let Some(format_clause) = &self.format_clause {
-                format_clause.fmt(f)?;
-            } else if self.columns.is_empty() {
-                write!(f, "DEFAULT VALUES")?;
-            }
+            source.fmt(f)?;
+        } else if !self.assignments.is_empty() {
+            write!(f, "SET")?;
+            indented_list(f, &self.assignments)?;
+        } else if let Some(format_clause) = &self.format_clause {
+            format_clause.fmt(f)?;
+        } else if self.columns.is_empty() {
+            write!(f, "DEFAULT VALUES")?;
         }
 
-        if !is_multi_table {
-            if let Some(insert_alias) = &self.insert_alias {
-                write!(f, " AS {0}", insert_alias.row_alias)?;
+        if let Some(insert_alias) = &self.insert_alias {
+            write!(f, " AS {0}", insert_alias.row_alias)?;
 
-                if let Some(col_aliases) = &insert_alias.col_aliases {
-                    if !col_aliases.is_empty() {
-                        write!(f, " ({})", display_comma_separated(col_aliases))?;
-                    }
+            if let Some(col_aliases) = &insert_alias.col_aliases {
+                if !col_aliases.is_empty() {
+                    write!(f, " ({})", display_comma_separated(col_aliases))?;
                 }
             }
         }
 
-        if !is_multi_table {
-            if let Some(on) = &self.on {
-                write!(f, "{on}")?;
-            }
+        if let Some(on) = &self.on {
+            write!(f, "{on}")?;
         }
 
-        if !is_multi_table {
-            if let Some(returning) = &self.returning {
-                SpaceOrNewline.fmt(f)?;
-                f.write_str("RETURNING")?;
-                indented_list(f, returning)?;
-            }
+        if let Some(returning) = &self.returning {
+            SpaceOrNewline.fmt(f)?;
+            f.write_str("RETURNING")?;
+            indented_list(f, returning)?;
         }
 
         Ok(())
