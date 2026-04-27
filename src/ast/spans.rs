@@ -541,6 +541,7 @@ impl Spanned for CreateTable {
             constraints,
             hive_distribution: _, // hive specific
             hive_formats: _,      // hive specific
+            using,                // Databricks/Spark specific
             file_format: _,       // enum
             location: _,          // string, no span
             query,
@@ -590,7 +591,8 @@ impl Spanned for CreateTable {
                 .chain(query.iter().map(|i| i.span()))
                 .chain(clone.iter().map(|i| i.span()))
                 .chain(partition_of.iter().map(|i| i.span()))
-                .chain(for_values.iter().map(|i| i.span())),
+                .chain(for_values.iter().map(|i| i.span()))
+                .chain(using.iter().map(|i| i.span())),
         )
     }
 }

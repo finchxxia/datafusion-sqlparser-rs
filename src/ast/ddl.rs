@@ -2914,6 +2914,11 @@ pub struct CreateTable {
     pub hive_distribution: HiveDistributionStyle,
     /// Hive-specific formats like `ROW FORMAT DELIMITED` or `ROW FORMAT SERDE 'serde_class' WITH SERDEPROPERTIES (...)`
     pub hive_formats: Option<HiveFormat>,
+    /// Databricks/Spark `USING <data_source>` clause.
+    /// Supports both simple names (e.g., `DELTA`, `ICEBERG`) and fully-qualified
+    /// class names (e.g., `org.apache.spark.sql.sources.CustomSource`).
+    /// <https://docs.databricks.com/sql/language-manual/sql-ref-syntax-ddl-create-table-using.html>
+    pub using: Option<ObjectName>,
     /// Table options
     pub table_options: CreateTableOptions,
     /// General comment for the table
@@ -3118,6 +3123,10 @@ impl fmt::Display for CreateTable {
 
         if let Some(version) = &self.version {
             write!(f, " {version}")?;
+        }
+
+        if let Some(ref using) = self.using {
+            write!(f, " USING {using}")?;
         }
 
         match &self.hive_distribution {

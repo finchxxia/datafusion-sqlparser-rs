@@ -6283,6 +6283,7 @@ fn parse_trigger_related_functions() {
             constraints: vec![],
             hive_distribution: HiveDistributionStyle::NONE,
             hive_formats: None,
+            using: None,
             file_format: None,
             location: None,
             query: None,

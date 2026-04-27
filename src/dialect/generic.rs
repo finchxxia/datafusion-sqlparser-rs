@@ -245,6 +245,10 @@ impl Dialect for GenericDialect {
         true
     }
 
+    fn supports_create_table_using(&self) -> bool {
+        true
+    }
+
     fn supports_install(&self) -> bool {
         true
     }

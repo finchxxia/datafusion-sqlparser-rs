@@ -1164,6 +1164,12 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports the `CREATE TABLE ... USING <data_source>` syntax.
+    /// <https://docs.databricks.com/sql/language-manual/sql-ref-syntax-ddl-create-table-using.html>
+    fn supports_create_table_using(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports the `CREATE TABLE SELECT` statement
     fn supports_create_table_select(&self) -> bool {
         false

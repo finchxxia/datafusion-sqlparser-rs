@@ -8227,6 +8227,13 @@ impl<'a> Parser<'a> {
         // SQLite supports `WITHOUT ROWID` at the end of `CREATE TABLE`
         let without_rowid = self.parse_keywords(&[Keyword::WITHOUT, Keyword::ROWID]);
 
+        let using =
+            if self.dialect.supports_create_table_using() && self.parse_keyword(Keyword::USING) {
+                Some(self.parse_object_name(false)?)
+            } else {
+                None
+            };
+
         let hive_distribution = self.parse_hive_distribution()?;
         let clustered_by = self.parse_optional_clustered_by()?;
         let hive_formats = self.parse_hive_formats()?;
@@ -8288,6 +8295,7 @@ impl<'a> Parser<'a> {
             .transient(transient)
             .hive_distribution(hive_distribution)
             .hive_formats(hive_formats)
+            .using(using)
             .global(global)
             .query(query)
             .without_rowid(without_rowid)

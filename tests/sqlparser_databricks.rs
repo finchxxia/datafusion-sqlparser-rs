@@ -588,3 +588,101 @@ fn parse_databricks_struct_type() {
         _ => unreachable!(),
     }
 }
+
+#[test]
+fn parse_create_table_using() {
+    databricks().verified_stmt("CREATE TABLE t (a INT) USING ICEBERG");
+    databricks().verified_stmt("CREATE TABLE t (a INT, b STRING) USING DELTA");
+    databricks().verified_stmt("CREATE TABLE t (a INT) USING PARQUET");
+    databricks().verified_stmt("CREATE TABLE t (a INT) USING CSV");
+    databricks().verified_stmt("CREATE TABLE IF NOT EXISTS t (a INT) USING ICEBERG");
+
+    match databricks().verified_stmt("CREATE TABLE t (a INT) USING ICEBERG") {
+        Statement::CreateTable(CreateTable { name, using, .. }) => {
+            assert_eq!(name.to_string(), "t");
+            assert_eq!(using.unwrap().to_string(), "ICEBERG");
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn parse_create_table_using_with_partitioned_by() {
+    databricks()
+        .verified_stmt("CREATE TABLE t (a INT, b STRING, dt DATE) USING DELTA PARTITIONED BY (dt)");
+
+    match databricks()
+        .verified_stmt("CREATE TABLE t (a INT, dt DATE) USING ICEBERG PARTITIONED BY (dt)")
+    {
+        Statement::CreateTable(CreateTable {
+            name,
+            using,
+            hive_distribution,
+            ..
+        }) => {
+            assert_eq!(name.to_string(), "t");
+            assert_eq!(using.unwrap().to_string(), "ICEBERG");
+            match hive_distribution {
+                HiveDistributionStyle::PARTITIONED {
+                    columns: partition_cols,
+                } => {
+                    assert_eq!(partition_cols.len(), 1);
+                    assert_eq!(partition_cols[0].name.to_string(), "dt");
+                }
+                _ => unreachable!(),
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn parse_create_table_using_with_options() {
+    databricks().verified_stmt("CREATE TABLE t (a INT) USING DELTA LOCATION 's3://bucket/path'");
+    databricks()
+        .verified_stmt("CREATE TABLE t (a INT) USING ICEBERG TBLPROPERTIES ('key' = 'value')");
+    databricks().verified_stmt(
+        "CREATE TABLE t (a INT, dt DATE) USING ICEBERG PARTITIONED BY (dt) LOCATION 's3://bucket/path'",
+    );
+}
+
+#[test]
+fn parse_create_table_using_as_select() {
+    databricks().verified_stmt("CREATE TABLE t USING PARQUET AS SELECT * FROM src");
+
+    match databricks().verified_stmt("CREATE TABLE t USING DELTA AS SELECT 1") {
+        Statement::CreateTable(CreateTable {
+            name, using, query, ..
+        }) => {
+            assert_eq!(name.to_string(), "t");
+            assert_eq!(using.unwrap().to_string(), "DELTA");
+            assert!(query.is_some());
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn parse_create_table_without_using() {
+    match databricks().verified_stmt("CREATE TABLE t (a INT)") {
+        Statement::CreateTable(CreateTable { using, .. }) => {
+            assert!(using.is_none());
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn parse_create_table_using_fully_qualified_class_name() {
+    let sql = "CREATE TABLE t (a INT) USING org.apache.spark.sql.sources.CustomSource";
+    match databricks().verified_stmt(sql) {
+        Statement::CreateTable(CreateTable { name, using, .. }) => {
+            assert_eq!(name.to_string(), "t");
+            assert_eq!(
+                using.unwrap().to_string(),
+                "org.apache.spark.sql.sources.CustomSource"
+            );
+        }
+        _ => unreachable!(),
+    }
+}

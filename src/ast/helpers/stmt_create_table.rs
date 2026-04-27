@@ -92,6 +92,8 @@ pub struct CreateTableBuilder {
     pub hive_distribution: HiveDistributionStyle,
     /// Optional Hive format settings.
     pub hive_formats: Option<HiveFormat>,
+    /// Databricks/Spark `USING <data_source>` clause.
+    pub using: Option<ObjectName>,
     /// Optional file format for storage.
     pub file_format: Option<FileFormat>,
     /// Optional storage location.
@@ -190,6 +192,7 @@ impl CreateTableBuilder {
             constraints: vec![],
             hive_distribution: HiveDistributionStyle::NONE,
             hive_formats: None,
+            using: None,
             file_format: None,
             location: None,
             query: None,
@@ -294,6 +297,11 @@ impl CreateTableBuilder {
     /// Set Hive-specific formats.
     pub fn hive_formats(mut self, hive_formats: Option<HiveFormat>) -> Self {
         self.hive_formats = hive_formats;
+        self
+    }
+    /// Set the Databricks/Spark `USING <data_source>` clause.
+    pub fn using(mut self, using: Option<ObjectName>) -> Self {
+        self.using = using;
         self
     }
     /// Set file format for the table (e.g., PARQUET).
@@ -521,6 +529,7 @@ impl CreateTableBuilder {
             constraints: self.constraints,
             hive_distribution: self.hive_distribution,
             hive_formats: self.hive_formats,
+            using: self.using,
             file_format: self.file_format,
             location: self.location,
             query: self.query,
@@ -596,6 +605,7 @@ impl From<CreateTable> for CreateTableBuilder {
             constraints: table.constraints,
             hive_distribution: table.hive_distribution,
             hive_formats: table.hive_formats,
+            using: table.using,
             file_format: table.file_format,
             location: table.location,
             query: table.query,
