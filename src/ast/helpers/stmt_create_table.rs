@@ -29,7 +29,7 @@ use crate::ast::{
     DistStyle, Expr, FileFormat, ForValues, HiveDistributionStyle, HiveFormat, Ident,
     InitializeKind, ObjectName, OnCommit, OneOrManyWithParens, Query, RefreshModeKind,
     RowAccessPolicy, Statement, StorageLifecyclePolicy, StorageSerializationPolicy,
-    TableConstraint, TableVersion, Tag, WithData, WrappedCollection,
+    TableConstraint, TableModel, TableVersion, Tag, WithData, WrappedCollection,
 };
 
 use crate::parser::ParserError;
@@ -123,6 +123,8 @@ pub struct CreateTableBuilder {
     pub partition_by: Option<Box<Expr>>,
     /// Optional `CLUSTER BY` expressions.
     pub cluster_by: Option<WrappedCollection<Vec<Expr>>>,
+    /// Optional grouped table model clauses.
+    pub table_model: Option<TableModel>,
     /// Optional `CLUSTERED BY` clause.
     pub clustered_by: Option<ClusteredBy>,
     /// Optional parent tables (`INHERITS`).
@@ -227,6 +229,7 @@ impl CreateTableBuilder {
             order_by: None,
             partition_by: None,
             cluster_by: None,
+            table_model: None,
             clustered_by: None,
             inherits: None,
             partition_of: None,
@@ -402,6 +405,11 @@ impl CreateTableBuilder {
     /// Set `CLUSTER BY` expression(s).
     pub fn cluster_by(mut self, cluster_by: Option<WrappedCollection<Vec<Expr>>>) -> Self {
         self.cluster_by = cluster_by;
+        self
+    }
+    /// Set grouped table model clauses.
+    pub fn table_model(mut self, table_model: Option<TableModel>) -> Self {
+        self.table_model = table_model;
         self
     }
     /// Set `CLUSTERED BY` clause.
@@ -622,6 +630,7 @@ impl CreateTableBuilder {
             order_by: self.order_by,
             partition_by: self.partition_by,
             cluster_by: self.cluster_by,
+            table_model: self.table_model,
             clustered_by: self.clustered_by,
             inherits: self.inherits,
             partition_of: self.partition_of,
@@ -707,6 +716,7 @@ impl From<CreateTable> for CreateTableBuilder {
             order_by: table.order_by,
             partition_by: table.partition_by,
             cluster_by: table.cluster_by,
+            table_model: table.table_model,
             clustered_by: table.clustered_by,
             inherits: table.inherits,
             partition_of: table.partition_of,

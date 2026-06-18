@@ -1240,6 +1240,31 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports table key model clauses after a
+    /// `CREATE TABLE` column list, such as `DUPLICATE KEY (...)`,
+    /// `UNIQUE KEY (...)`, or `AGGREGATE KEY (...)`.
+    fn supports_create_table_key_model_clause(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect supports table distribution clauses such as
+    /// `DISTRIBUTED BY HASH(col) BUCKETS 8` or `DISTRIBUTED BY RANDOM`.
+    fn supports_create_table_distribution_clause(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect supports a `PROPERTIES (...)` clause in
+    /// `CREATE TABLE`.
+    fn supports_create_table_properties_clause(&self) -> bool {
+        false
+    }
+
+    /// Returns true if `ENGINE = ...` or table-level `COMMENT '...'` can by
+    /// itself create a grouped table model after a `CREATE TABLE` column list.
+    fn supports_create_table_model_clause_without_marker(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect accepts a comma-separated list of table-level
     /// options placed between the table name and the column-list parenthesis, e.g.
     ///

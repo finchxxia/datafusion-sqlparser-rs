@@ -2907,6 +2907,175 @@ impl fmt::Display for CreateIndex {
     }
 }
 
+/// Table key model kind.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum TableKeyModelKind {
+    /// `DUPLICATE KEY`.
+    Duplicate,
+    /// `UNIQUE KEY`.
+    Unique,
+    /// `AGGREGATE KEY`.
+    Aggregate,
+}
+
+impl fmt::Display for TableKeyModelKind {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(match self {
+            TableKeyModelKind::Duplicate => "DUPLICATE",
+            TableKeyModelKind::Unique => "UNIQUE",
+            TableKeyModelKind::Aggregate => "AGGREGATE",
+        })
+    }
+}
+
+/// `DUPLICATE|UNIQUE|AGGREGATE KEY (...)` table model.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub struct TableKeyModel {
+    /// The key model kind.
+    pub kind: TableKeyModelKind,
+    /// Columns named in the `KEY` clause.
+    pub columns: Vec<Ident>,
+    /// Optional `ORDER BY (...)` clause for local sort order.
+    ///
+    /// The parser accepts this clause for all Doris key models and leaves
+    /// model-specific semantic validation to Doris or downstream consumers.
+    pub order_by: Option<Vec<Ident>>,
+}
+
+impl fmt::Display for TableKeyModel {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{} KEY({})",
+            self.kind,
+            display_comma_separated(&self.columns)
+        )?;
+        if let Some(order_by) = &self.order_by {
+            write!(f, " ORDER BY({})", display_comma_separated(order_by))?;
+        }
+        Ok(())
+    }
+}
+
+/// Bucket count declaration.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum BucketCount {
+    /// A fixed bucket count.
+    Count(u64),
+    /// `BUCKETS AUTO`.
+    Auto,
+}
+
+impl fmt::Display for BucketCount {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            BucketCount::Count(value) => write!(f, "{value}"),
+            BucketCount::Auto => f.write_str("AUTO"),
+        }
+    }
+}
+
+/// `DISTRIBUTED BY ...` clause.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum TableDistribution {
+    /// `DISTRIBUTED BY HASH(col[, ...]) [BUCKETS n|AUTO]`.
+    Hash {
+        /// Hash distribution columns.
+        columns: Vec<Ident>,
+        /// Optional bucket count.
+        buckets: Option<BucketCount>,
+    },
+    /// `DISTRIBUTED BY RANDOM [BUCKETS n|AUTO]`.
+    Random {
+        /// Optional bucket count.
+        buckets: Option<BucketCount>,
+    },
+}
+
+impl fmt::Display for TableDistribution {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            TableDistribution::Hash { columns, buckets } => {
+                write!(
+                    f,
+                    "DISTRIBUTED BY HASH({})",
+                    display_comma_separated(columns)
+                )?;
+                if let Some(buckets) = buckets {
+                    write!(f, " BUCKETS {buckets}")?;
+                }
+                Ok(())
+            }
+            TableDistribution::Random { buckets } => {
+                f.write_str("DISTRIBUTED BY RANDOM")?;
+                if let Some(buckets) = buckets {
+                    write!(f, " BUCKETS {buckets}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Grouped table model clauses such as engine, key model, distribution, and properties.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub struct TableModel {
+    /// `ENGINE = <type>` clause (e.g. `OLAP`).
+    pub engine: Option<Ident>,
+    /// Table key model clause.
+    pub key_model: Option<TableKeyModel>,
+    /// Table-level `COMMENT '<text>'`.
+    pub comment: Option<String>,
+    /// Table distribution clause.
+    pub distribution: Option<TableDistribution>,
+    /// Table model properties.
+    pub properties: Vec<SqlOption>,
+}
+
+impl fmt::Display for TableModel {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut separator = "";
+        if let Some(engine) = &self.engine {
+            write!(f, "{separator}ENGINE = {engine}")?;
+            separator = " ";
+        }
+        if let Some(key_model) = &self.key_model {
+            write!(f, "{separator}{key_model}")?;
+            separator = " ";
+        }
+        if let Some(comment) = &self.comment {
+            write!(
+                f,
+                "{separator}COMMENT '{}'",
+                escape_single_quote_string(comment)
+            )?;
+            separator = " ";
+        }
+        if let Some(distribution) = &self.distribution {
+            write!(f, "{separator}{distribution}")?;
+            separator = " ";
+        }
+        if !self.properties.is_empty() {
+            write!(
+                f,
+                "{separator}PROPERTIES ({})",
+                display_comma_separated(&self.properties)
+            )?;
+        }
+        Ok(())
+    }
+}
+
 /// CREATE TABLE statement.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -2985,6 +3154,8 @@ pub struct CreateTable {
     /// Snowflake: Table clustering list which contains base column, expressions on base columns.
     /// <https://docs.snowflake.com/en/user-guide/tables-clustering-keys#defining-a-clustering-key-for-a-table>
     pub cluster_by: Option<WrappedCollection<Vec<Expr>>>,
+    /// Grouped table model clauses such as engine, key model, distribution, and properties.
+    pub table_model: Option<TableModel>,
     /// Hive: Table clustering column list.
     /// <https://cwiki.apache.org/confluence/display/Hive/LanguageManual+DDL#LanguageManualDDL-CreateTable>
     pub clustered_by: Option<ClusteredBy>,
@@ -3170,6 +3341,10 @@ impl fmt::Display for CreateTable {
         // [Hive](https://cwiki.apache.org/confluence/display/Hive/LanguageManual+DDL#LanguageManualDDL-CreateTable)
         if let Some(comment) = &self.comment {
             write!(f, " COMMENT '{comment}'")?;
+        }
+
+        if let Some(table_model) = &self.table_model {
+            write!(f, " {table_model}")?;
         }
 
         // Only for SQLite

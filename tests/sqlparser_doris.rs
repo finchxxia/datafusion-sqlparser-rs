@@ -22,7 +22,7 @@
 mod test_utils;
 
 use sqlparser::ast::*;
-use sqlparser::dialect::{Dialect, DorisDialect, GenericDialect};
+use sqlparser::dialect::{AnsiDialect, Dialect, DorisDialect, GenericDialect};
 use sqlparser::tokenizer::Token;
 use test_utils::*;
 
@@ -51,6 +51,18 @@ fn generic_supports_doris_aggregate_column_options_only() {
     let dialect = GenericDialect {};
     assert!(!dialect.supports_parenthesized_auto_increment_column_option());
     assert!(dialect.supports_column_aggregation_function_option());
+}
+
+#[test]
+fn doris_and_generic_enable_doris_create_table_model_gates() {
+    let dialects = doris_and_generic();
+    for dialect in dialects.dialects {
+        assert!(dialect.supports_create_table_key_model_clause());
+        assert!(dialect.supports_create_table_distribution_clause());
+        assert!(dialect.supports_create_table_properties_clause());
+    }
+    assert!(DorisDialect {}.supports_create_table_model_clause_without_marker());
+    assert!(!GenericDialect {}.supports_create_table_model_clause_without_marker());
 }
 
 #[test]
@@ -170,4 +182,167 @@ fn ast_doris_aggregate_column_option_is_dialect_specific() {
         }
         _ => panic!("Expected CreateTable"),
     }
+}
+
+#[test]
+fn parse_doris_duplicate_key_hash_distribution() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT, v STRING) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_unique_key_random_distribution() {
+    doris_and_generic()
+        .verified_stmt("CREATE TABLE t (k BIGINT, v STRING) UNIQUE KEY(k) DISTRIBUTED BY RANDOM");
+}
+
+#[test]
+fn parse_doris_buckets_auto() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT, v STRING) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS AUTO",
+    );
+}
+
+#[test]
+fn parse_doris_table_properties() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT, v STRING) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8 PROPERTIES ('replication_num' = '1')",
+    );
+}
+
+#[test]
+fn parse_doris_engine_before_key_model() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT) ENGINE = OLAP DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_engine_with_comment_and_properties() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT, v STRING) ENGINE = OLAP DUPLICATE KEY(k) COMMENT 'my table' DISTRIBUTED BY HASH(k) BUCKETS 8 PROPERTIES ('replication_num' = '1')",
+    );
+}
+
+#[test]
+fn parse_doris_unique_key_order_by() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT, c BIGINT) UNIQUE KEY(k) ORDER BY(c) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn ast_doris_key_model_is_structured() {
+    let sql =
+        "CREATE TABLE t (k BIGINT, v STRING) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            table_model:
+                Some(TableModel {
+                    key_model: Some(km),
+                    ..
+                }),
+            ..
+        }) => {
+            assert_eq!(km.kind, TableKeyModelKind::Duplicate);
+            assert_eq!(km.columns, vec![Ident::new("k")]);
+        }
+        _ => panic!("Expected CreateTable with key_model"),
+    }
+}
+
+#[test]
+fn ast_doris_key_model_order_by() {
+    let sql =
+        "CREATE TABLE t (k BIGINT, c BIGINT) UNIQUE KEY(k) ORDER BY(c) DISTRIBUTED BY HASH(k) BUCKETS 8";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            table_model:
+                Some(TableModel {
+                    key_model: Some(km),
+                    ..
+                }),
+            ..
+        }) => {
+            assert_eq!(km.kind, TableKeyModelKind::Unique);
+            assert_eq!(km.columns, vec![Ident::new("k")]);
+            assert_eq!(km.order_by, Some(vec![Ident::new("c")]));
+        }
+        _ => panic!("Expected CreateTable with key_model"),
+    }
+}
+
+#[test]
+fn ast_doris_distribution_hash_is_structured() {
+    let sql =
+        "CREATE TABLE t (k BIGINT, v STRING) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            table_model:
+                Some(TableModel {
+                    distribution: Some(TableDistribution::Hash { columns, buckets }),
+                    ..
+                }),
+            ..
+        }) => {
+            assert_eq!(columns, vec![Ident::new("k")]);
+            assert_eq!(buckets, Some(BucketCount::Count(8)));
+        }
+        _ => panic!("Expected CreateTable with Hash distribution"),
+    }
+}
+
+#[test]
+fn ast_doris_engine_comment_properties_are_structured() {
+    let sql =
+        "CREATE TABLE t (k BIGINT) ENGINE = OLAP COMMENT 'table comment' PROPERTIES ('replication_num' = '1')";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            table_model:
+                Some(TableModel {
+                    engine: Some(engine),
+                    comment: Some(comment),
+                    properties,
+                    ..
+                }),
+            table_options,
+            ..
+        }) => {
+            assert_eq!(engine, Ident::new("OLAP"));
+            assert_eq!(comment, "table comment");
+            assert_eq!(properties.len(), 1);
+            assert_eq!(table_options, CreateTableOptions::None);
+        }
+        _ => panic!("Expected CreateTable with table_model"),
+    }
+}
+
+#[test]
+fn generic_engine_without_model_marker_remains_plain_options() {
+    let generic = TestedDialects::new(vec![Box::new(GenericDialect {})]);
+    let sql = "CREATE TABLE t (k BIGINT) ENGINE = InnoDB";
+    match generic.verified_stmt(sql) {
+        Statement::CreateTable(CreateTable {
+            table_model,
+            table_options,
+            ..
+        }) => {
+            assert!(table_model.is_none());
+            assert!(matches!(table_options, CreateTableOptions::Plain(_)));
+        }
+        _ => panic!("Expected CreateTable"),
+    }
+}
+
+#[test]
+fn ansi_rejects_doris_key_model() {
+    let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
+    let sql =
+        "CREATE TABLE t (k BIGINT, v STRING) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8";
+    assert!(ansi.parse_sql_statements(sql).is_err());
 }

@@ -58,4 +58,20 @@ impl Dialect for DorisDialect {
     fn supports_column_aggregation_function_option(&self) -> bool {
         true
     }
+
+    fn supports_create_table_key_model_clause(&self) -> bool {
+        true
+    }
+
+    fn supports_create_table_distribution_clause(&self) -> bool {
+        true
+    }
+
+    fn supports_create_table_properties_clause(&self) -> bool {
+        true
+    }
+
+    fn supports_create_table_model_clause_without_marker(&self) -> bool {
+        true
+    }
 }

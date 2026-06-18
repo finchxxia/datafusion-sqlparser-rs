@@ -45,9 +45,10 @@ use super::{
     PartitionBoundValue, PivotValueSource, ProjectionSelect, Query, RaiseStatement,
     RaiseStatementValue, ReferentialAction, RenameSelectItem, ReplaceSelectElement,
     ReplaceSelectItem, Select, SelectInto, SelectItem, SetExpr, SqlOption, Statement, Subscript,
-    SymbolDefinition, TableAlias, TableAliasColumnDef, TableConstraint, TableFactor, TableObject,
-    TableOptionsClustered, TableWithJoins, Update, UpdateTableFromKind, Use, Values, ViewColumnDef,
-    WhileStatement, WildcardAdditionalOptions, With, WithFill,
+    SymbolDefinition, TableAlias, TableAliasColumnDef, TableConstraint, TableDistribution,
+    TableFactor, TableKeyModel, TableModel, TableObject, TableOptionsClustered, TableWithJoins,
+    Update, UpdateTableFromKind, Use, Values, ViewColumnDef, WhileStatement,
+    WildcardAdditionalOptions, With, WithFill,
 };
 
 /// Given an iterator of spans, return the [Span::union] of all spans.
@@ -546,6 +547,43 @@ impl Spanned for Use {
     }
 }
 
+impl Spanned for TableKeyModel {
+    fn span(&self) -> Span {
+        union_spans(
+            self.columns.iter().map(|i| i.span).chain(
+                self.order_by
+                    .iter()
+                    .flat_map(|cols| cols.iter().map(|i| i.span)),
+            ),
+        )
+    }
+}
+
+impl Spanned for TableDistribution {
+    fn span(&self) -> Span {
+        match self {
+            TableDistribution::Hash {
+                columns,
+                buckets: _,
+            } => union_spans(columns.iter().map(|i| i.span)),
+            TableDistribution::Random { buckets: _ } => Span::empty(),
+        }
+    }
+}
+
+impl Spanned for TableModel {
+    fn span(&self) -> Span {
+        union_spans(
+            self.engine
+                .iter()
+                .map(|i| i.span)
+                .chain(self.key_model.iter().map(|i| i.span()))
+                .chain(self.distribution.iter().map(|i| i.span()))
+                .chain(self.properties.iter().map(|i| i.span())),
+        )
+    }
+}
+
 impl Spanned for CreateTable {
     fn span(&self) -> Span {
         let CreateTable {
@@ -577,6 +615,7 @@ impl Spanned for CreateTable {
             order_by: _,     // todo, clickhouse specific
             partition_by: _, // todo, BigQuery specific
             cluster_by: _,   // todo, BigQuery specific
+            table_model,
             clustered_by: _, // todo, Hive specific
             inherits: _,     // todo, PostgreSQL specific
             partition_of,
@@ -622,7 +661,8 @@ impl Spanned for CreateTable {
                 .chain(query.iter().map(|i| i.span()))
                 .chain(clone.iter().map(|i| i.span()))
                 .chain(partition_of.iter().map(|i| i.span()))
-                .chain(for_values.iter().map(|i| i.span())),
+                .chain(for_values.iter().map(|i| i.span()))
+                .chain(table_model.iter().map(|i| i.span())),
         )
     }
 }

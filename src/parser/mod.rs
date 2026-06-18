@@ -392,6 +392,41 @@ impl From<&ParserError> for ExprPrefixError {
     }
 }
 
+/// Intermediate container for table model clauses parsed between the column
+/// list and trailing table options.
+#[derive(Default)]
+struct TableModelClauses {
+    engine: Option<Ident>,
+    key_model: Option<TableKeyModel>,
+    comment: Option<String>,
+    distribution: Option<TableDistribution>,
+    properties: Vec<SqlOption>,
+}
+
+impl TableModelClauses {
+    fn is_empty(&self) -> bool {
+        self.engine.is_none()
+            && self.key_model.is_none()
+            && self.comment.is_none()
+            && self.distribution.is_none()
+            && self.properties.is_empty()
+    }
+
+    fn into_table_model(self) -> Option<TableModel> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(TableModel {
+                engine: self.engine,
+                key_model: self.key_model,
+                comment: self.comment,
+                distribution: self.distribution,
+                properties: self.properties,
+            })
+        }
+    }
+}
+
 impl<'a> Parser<'a> {
     /// Create a parser for a [`Dialect`]
     ///
@@ -8743,6 +8778,8 @@ impl<'a> Parser<'a> {
         let clustered_by = self.parse_optional_clustered_by()?;
         let hive_formats = self.parse_hive_formats()?;
 
+        let table_model = self.parse_optional_doris_create_table_clauses()?;
+
         let create_table_config = self.parse_optional_create_table_config()?;
 
         // ClickHouse supports `PRIMARY KEY`, before `ORDER BY`
@@ -8864,6 +8901,7 @@ impl<'a> Parser<'a> {
             .clustered_by(clustered_by)
             .partition_by(partition_by)
             .cluster_by(create_table_config.cluster_by)
+            .table_model(table_model)
             .inherits(create_table_config.inherits)
             .partition_of(partition_of)
             .for_values(for_values)
@@ -9917,6 +9955,159 @@ impl<'a> Parser<'a> {
             None
         };
         Ok(clustered_by)
+    }
+
+    /// Parse Doris-compatible `CREATE TABLE` table model clauses in official order:
+    /// `[ENGINE = ...] [KEY_MODEL] [COMMENT '...'] [DISTRIBUTION] [PROPERTIES]`
+    ///
+    /// Uses save/restore to avoid consuming tokens when no table model
+    /// clause is found, so the generic parser can handle MySQL/ClickHouse
+    /// ENGINE etc.
+    fn parse_optional_doris_create_table_clauses(
+        &mut self,
+    ) -> Result<Option<TableModel>, ParserError> {
+        if !self.dialect.supports_create_table_key_model_clause()
+            && !self.dialect.supports_create_table_distribution_clause()
+            && !self.dialect.supports_create_table_properties_clause()
+            && !self
+                .dialect
+                .supports_create_table_model_clause_without_marker()
+        {
+            return Ok(None);
+        }
+
+        let save_index = self.index;
+
+        let engine = self.parse_optional_doris_engine()?;
+        let key_model = self.parse_optional_doris_key_model()?;
+        let comment = self.parse_optional_doris_table_comment()?;
+        let distribution = self.parse_optional_doris_distribution()?;
+        let properties = self.parse_optional_doris_properties()?;
+
+        // Key model, distribution and PROPERTIES (the keyword, not
+        // WITH/OPTIONS) are unambiguous table model markers. GenericDialect
+        // only commits to the table model path for those markers, so
+        // MySQL/ClickHouse-style ENGINE and COMMENT remain plain table options.
+        let has_unambiguous_marker =
+            key_model.is_some() || distribution.is_some() || !properties.is_empty();
+        let has_markerless_model_clause = self
+            .dialect
+            .supports_create_table_model_clause_without_marker()
+            && (engine.is_some() || comment.is_some());
+
+        if !has_unambiguous_marker && !has_markerless_model_clause {
+            self.index = save_index;
+            return Ok(None);
+        }
+
+        Ok(TableModelClauses {
+            engine,
+            key_model,
+            comment,
+            distribution,
+            properties,
+        }
+        .into_table_model())
+    }
+
+    fn parse_optional_doris_engine(&mut self) -> Result<Option<Ident>, ParserError> {
+        if !self.parse_keyword(Keyword::ENGINE) {
+            return Ok(None);
+        }
+        let _ = self.consume_token(&Token::Eq);
+        Ok(Some(self.parse_identifier()?))
+    }
+
+    fn parse_optional_doris_table_comment(&mut self) -> Result<Option<String>, ParserError> {
+        if !self.parse_keyword(Keyword::COMMENT) {
+            return Ok(None);
+        }
+        let _ = self.consume_token(&Token::Eq);
+        let next = self.next_token();
+        match next.token {
+            Token::SingleQuotedString(s) => Ok(Some(s)),
+            Token::DoubleQuotedString(s) => Ok(Some(s)),
+            _ => self.expected("a string literal after COMMENT", next),
+        }
+    }
+
+    fn parse_optional_doris_key_model(&mut self) -> Result<Option<TableKeyModel>, ParserError> {
+        if !self.dialect.supports_create_table_key_model_clause() {
+            return Ok(None);
+        }
+
+        let kind = if self.parse_keyword(Keyword::DUPLICATE) {
+            Some(TableKeyModelKind::Duplicate)
+        } else if self.parse_keyword(Keyword::UNIQUE) {
+            Some(TableKeyModelKind::Unique)
+        } else if self.parse_keyword(Keyword::AGGREGATE) {
+            Some(TableKeyModelKind::Aggregate)
+        } else {
+            None
+        };
+
+        let Some(kind) = kind else {
+            return Ok(None);
+        };
+
+        self.expect_keyword_is(Keyword::KEY)?;
+        let columns = self.parse_parenthesized_column_list(IsOptional::Mandatory, false)?;
+
+        let order_by = if self.parse_keywords(&[Keyword::ORDER, Keyword::BY]) {
+            Some(self.parse_parenthesized_column_list(IsOptional::Mandatory, false)?)
+        } else {
+            None
+        };
+
+        Ok(Some(TableKeyModel {
+            kind,
+            columns,
+            order_by,
+        }))
+    }
+
+    fn parse_optional_doris_buckets(&mut self) -> Result<Option<BucketCount>, ParserError> {
+        if !self.parse_keyword(Keyword::BUCKETS) {
+            return Ok(None);
+        }
+
+        if self.parse_keyword(Keyword::AUTO) {
+            return Ok(Some(BucketCount::Auto));
+        }
+
+        let value = self.parse_literal_uint()?;
+        Ok(Some(BucketCount::Count(value)))
+    }
+
+    fn parse_optional_doris_distribution(
+        &mut self,
+    ) -> Result<Option<TableDistribution>, ParserError> {
+        if !self.dialect.supports_create_table_distribution_clause()
+            || !self.parse_keywords(&[Keyword::DISTRIBUTED, Keyword::BY])
+        {
+            return Ok(None);
+        }
+
+        if self.parse_keyword(Keyword::HASH) {
+            let columns = self.parse_parenthesized_column_list(IsOptional::Mandatory, false)?;
+            let buckets = self.parse_optional_doris_buckets()?;
+            Ok(Some(TableDistribution::Hash { columns, buckets }))
+        } else if self.parse_keyword(Keyword::RANDOM) {
+            let buckets = self.parse_optional_doris_buckets()?;
+            Ok(Some(TableDistribution::Random { buckets }))
+        } else {
+            self.expected("HASH or RANDOM after DISTRIBUTED BY", self.peek_token())
+        }
+    }
+
+    fn parse_optional_doris_properties(&mut self) -> Result<Vec<SqlOption>, ParserError> {
+        if !self.dialect.supports_create_table_properties_clause()
+            || !self.peek_keyword(Keyword::PROPERTIES)
+        {
+            return Ok(vec![]);
+        }
+
+        self.parse_options(Keyword::PROPERTIES)
     }
 
     /// Parse a referential action used in foreign key clauses.
