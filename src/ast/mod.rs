@@ -4875,6 +4875,23 @@ pub enum Statement {
         /// Optional table format information.
         table_format: Option<HiveLoadDataFormat>,
     },
+    /// Doris MySQL-compatible `LOAD DATA` statement (minimal subset).
+    ///
+    /// Currently supports `LOAD DATA [LOCAL] INFILE '...' INTO TABLE ... [PROPERTIES (...)]`.
+    /// Extended clauses (column list, separator, format, SET, WHERE) are not
+    /// yet supported and should be added as structured fields when needed.
+    ///
+    /// See <https://doris.apache.org/docs/3.x/sql-manual/sql-statements/data-modification/load-and-export/MYSQL-LOAD/>
+    DorisLoadData {
+        /// Whether `LOCAL` was specified.
+        local: bool,
+        /// Input file path.
+        infile: String,
+        /// Target table name.
+        table_name: ObjectName,
+        /// Optional table properties.
+        properties: Vec<SqlOption>,
+    },
     /// ```sql
     /// Rename TABLE tbl_name TO new_tbl_name[, tbl_name2 TO new_tbl_name2] ...
     /// ```
@@ -5512,6 +5529,23 @@ impl fmt::Display for Statement {
                 }) = &table_format
                 {
                     write!(f, " INPUTFORMAT {input_format} SERDE {serde}")?;
+                }
+                Ok(())
+            }
+            Statement::DorisLoadData {
+                local,
+                infile,
+                table_name,
+                properties,
+            } => {
+                write!(
+                    f,
+                    "LOAD DATA {}INFILE '{}' INTO TABLE {table_name}",
+                    if *local { "LOCAL " } else { "" },
+                    value::escape_single_quote_string(infile),
+                )?;
+                if !properties.is_empty() {
+                    write!(f, " PROPERTIES ({})", display_comma_separated(properties))?;
                 }
                 Ok(())
             }
