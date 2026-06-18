@@ -46,7 +46,8 @@ use super::{
     RaiseStatementValue, ReferentialAction, RenameSelectItem, ReplaceSelectElement,
     ReplaceSelectItem, Select, SelectInto, SelectItem, SetExpr, SqlOption, Statement, Subscript,
     SymbolDefinition, TableAlias, TableAliasColumnDef, TableConstraint, TableDistribution,
-    TableFactor, TableKeyModel, TableModel, TableObject, TableOptionsClustered, TableWithJoins,
+    TableFactor, TableKeyModel, TableModel, TableObject, TableOptionsClustered, TablePartitioning,
+    TablePartitioningDefinition, TablePartitioningEntry, TablePartitioningValues, TableWithJoins,
     Update, UpdateTableFromKind, Use, Values, ViewColumnDef, WhileStatement,
     WildcardAdditionalOptions, With, WithFill,
 };
@@ -571,6 +572,65 @@ impl Spanned for TableDistribution {
     }
 }
 
+impl Spanned for TablePartitioningValues {
+    fn span(&self) -> Span {
+        match self {
+            TablePartitioningValues::LessThan(values) => {
+                union_spans(values.iter().map(|i| i.span()))
+            }
+            TablePartitioningValues::LessThanMaxValue => Span::empty(),
+            TablePartitioningValues::In(values) => union_spans(
+                values
+                    .iter()
+                    .flat_map(|values| values.iter().map(|i| i.span())),
+            ),
+            TablePartitioningValues::FixedRange { start, end } => {
+                union_spans(start.iter().chain(end.iter()).map(|i| i.span()))
+            }
+        }
+    }
+}
+
+impl Spanned for TablePartitioningDefinition {
+    fn span(&self) -> Span {
+        union_spans(
+            core::iter::once(self.name.span)
+                .chain(core::iter::once(self.values.span()))
+                .chain(self.properties.iter().map(|i| i.span())),
+        )
+    }
+}
+
+impl Spanned for TablePartitioningEntry {
+    fn span(&self) -> Span {
+        match self {
+            TablePartitioningEntry::Definition(def) => def.span(),
+            TablePartitioningEntry::BatchRange {
+                from,
+                to,
+                interval_unit,
+                ..
+            } => union_spans(
+                from.iter()
+                    .chain(to.iter())
+                    .map(|i| i.span())
+                    .chain(interval_unit.iter().map(|i| i.span)),
+            ),
+        }
+    }
+}
+
+impl Spanned for TablePartitioning {
+    fn span(&self) -> Span {
+        union_spans(
+            self.columns
+                .iter()
+                .map(|i| i.span())
+                .chain(self.partitions.iter().map(|i| i.span())),
+        )
+    }
+}
+
 impl Spanned for TableModel {
     fn span(&self) -> Span {
         union_spans(
@@ -578,6 +638,7 @@ impl Spanned for TableModel {
                 .iter()
                 .map(|i| i.span)
                 .chain(self.key_model.iter().map(|i| i.span()))
+                .chain(self.partitioning.iter().map(|i| i.span()))
                 .chain(self.distribution.iter().map(|i| i.span()))
                 .chain(self.properties.iter().map(|i| i.span())),
         )
@@ -862,8 +923,8 @@ impl Spanned for RaiseStatementValue {
 /// - [ColumnOption::PrimaryKey]
 /// - [ColumnOption::Unique]
 /// - [ColumnOption::DialectSpecific]
-/// - [ColumnOption::AutoIncrement]
 /// - [ColumnOption::Generated]
+/// - [ColumnOption::AutoIncrement]
 impl Spanned for ColumnOption {
     fn span(&self) -> Span {
         match self {

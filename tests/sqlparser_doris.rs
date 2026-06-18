@@ -323,6 +323,178 @@ fn ast_doris_engine_comment_properties_are_structured() {
 }
 
 #[test]
+fn parse_doris_range_partition() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01')) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_list_partition() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY LIST(dt) (PARTITION p1 VALUES IN (('2024-01-01'), ('2024-01-02'))) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_auto_partition_skeleton() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) AUTO PARTITION BY RANGE(date_trunc(dt, 'day')) DISTRIBUTED BY RANDOM",
+    );
+}
+
+#[test]
+fn parse_doris_partition_values_less_than_maxvalue() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01'), PARTITION pmax VALUES LESS THAN MAXVALUE) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_partition_with_properties() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01') PROPERTIES ('storage_medium' = 'SSD')) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_list_partition_single_values() {
+    doris_and_generic().one_statement_parses_to(
+        "CREATE TABLE t (k BIGINT, city STRING) DUPLICATE KEY(k) PARTITION BY LIST(city) (PARTITION p1 VALUES IN ('Beijing', 'Shanghai')) DISTRIBUTED BY HASH(k) BUCKETS 8",
+        "CREATE TABLE t (k BIGINT, city STRING) DUPLICATE KEY(k) PARTITION BY LIST(city) (PARTITION p1 VALUES IN (('Beijing'), ('Shanghai'))) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_multi_column_range_partition() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k1 INT, k2 INT, v INT) DUPLICATE KEY(k1, k2) PARTITION BY RANGE(k1, k2) (PARTITION p1 VALUES LESS THAN ('100', '200')) DISTRIBUTED BY HASH(k1) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_auto_partition_by_list_multi_column() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k1 INT, k2 INT, v INT) DUPLICATE KEY(k1, k2) AUTO PARTITION BY LIST(k1, k2) DISTRIBUTED BY HASH(k1) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_partition_fixed_range() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION p1 VALUES [('2024-01-01'), ('2024-02-01'))) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_partition_batch_range() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (FROM ('2024-01-01') TO ('2024-02-01') INTERVAL 1 DAY) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_max_value_underscore() {
+    doris_and_generic().one_statement_parses_to(
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION pmax VALUES LESS THAN MAX_VALUE) DISTRIBUTED BY HASH(k) BUCKETS 8",
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION pmax VALUES LESS THAN MAXVALUE) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn ast_doris_partition_range_is_structured() {
+    let sql = "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01')) DISTRIBUTED BY HASH(k) BUCKETS 8";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            table_model:
+                Some(TableModel {
+                    partitioning: Some(dp),
+                    ..
+                }),
+            ..
+        }) => {
+            assert!(!dp.auto);
+            assert_eq!(dp.kind, TablePartitioningKind::Range);
+            assert_eq!(dp.columns.len(), 1);
+            assert_eq!(dp.partitions.len(), 1);
+            match &dp.partitions[0] {
+                TablePartitioningEntry::Definition(def) => {
+                    assert_eq!(def.name, Ident::new("p1"));
+                    match &def.values {
+                        TablePartitioningValues::LessThan(values) => {
+                            assert_eq!(values.len(), 1);
+                        }
+                        _ => panic!("Expected LessThan partition values"),
+                    }
+                }
+                _ => panic!("Expected Definition entry"),
+            }
+        }
+        _ => panic!("Expected CreateTable with partitioning"),
+    }
+}
+
+#[test]
+fn ast_doris_partition_maxvalue_is_structured() {
+    let sql = "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION pmax VALUES LESS THAN MAXVALUE) DISTRIBUTED BY HASH(k) BUCKETS 8";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            table_model:
+                Some(TableModel {
+                    partitioning: Some(dp),
+                    ..
+                }),
+            ..
+        }) => {
+            assert_eq!(dp.partitions.len(), 1);
+            match &dp.partitions[0] {
+                TablePartitioningEntry::Definition(def) => {
+                    assert_eq!(def.name, Ident::new("pmax"));
+                    assert_eq!(def.values, TablePartitioningValues::LessThanMaxValue);
+                }
+                _ => panic!("Expected Definition entry"),
+            }
+        }
+        _ => panic!("Expected CreateTable with partitioning"),
+    }
+}
+
+#[test]
+fn ast_doris_batch_range_partition() {
+    let sql = "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (FROM ('2024-01-01') TO ('2024-02-01') INTERVAL 1 DAY) DISTRIBUTED BY HASH(k) BUCKETS 8";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            table_model:
+                Some(TableModel {
+                    partitioning: Some(dp),
+                    ..
+                }),
+            ..
+        }) => {
+            assert_eq!(dp.partitions.len(), 1);
+            match &dp.partitions[0] {
+                TablePartitioningEntry::BatchRange {
+                    from,
+                    to,
+                    interval_value,
+                    interval_unit,
+                } => {
+                    assert_eq!(from.len(), 1);
+                    assert_eq!(to.len(), 1);
+                    assert_eq!(*interval_value, 1);
+                    assert_eq!(interval_unit.as_ref().unwrap(), &Ident::new("DAY"));
+                }
+                _ => panic!("Expected BatchRange entry"),
+            }
+        }
+        _ => panic!("Expected CreateTable with partitioning"),
+    }
+}
+
+#[test]
 fn generic_engine_without_model_marker_remains_plain_options() {
     let generic = TestedDialects::new(vec![Box::new(GenericDialect {})]);
     let sql = "CREATE TABLE t (k BIGINT) ENGINE = InnoDB";
