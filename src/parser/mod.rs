@@ -9374,6 +9374,11 @@ impl<'a> Parser<'a> {
         let next_token = self.next_token();
         let value = match next_token.token {
             Token::SingleQuotedString(str) => str,
+            Token::DoubleQuotedString(str)
+                if self.dialect.supports_double_quoted_comment_string() =>
+            {
+                str
+            }
             Token::DollarQuotedString(str) => str.value,
             _ => self.expected("string literal", next_token)?,
         };
@@ -9739,8 +9744,8 @@ impl<'a> Parser<'a> {
             Ok(Some(ColumnOption::DialectSpecific(vec![
                 Token::make_keyword("DESC"),
             ])))
-        } else if self.parse_keywords(&[Keyword::ON, Keyword::UPDATE])
-            && dialect_of!(self is MySqlDialect | GenericDialect)
+        } else if self.dialect.supports_column_on_update_option()
+            && self.parse_keywords(&[Keyword::ON, Keyword::UPDATE])
         {
             let expr = self.parse_expr()?;
             Ok(Some(ColumnOption::OnUpdate(expr)))

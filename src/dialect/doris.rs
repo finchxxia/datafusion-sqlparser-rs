@@ -95,6 +95,14 @@ impl Dialect for DorisDialect {
         true
     }
 
+    fn supports_double_quoted_comment_string(&self) -> bool {
+        true
+    }
+
+    fn supports_column_on_update_option(&self) -> bool {
+        true
+    }
+
     fn supports_load_data_infile(&self) -> bool {
         true
     }

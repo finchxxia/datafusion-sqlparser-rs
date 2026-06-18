@@ -201,6 +201,10 @@ impl Dialect for GenericDialect {
         true
     }
 
+    fn supports_column_on_update_option(&self) -> bool {
+        true
+    }
+
     fn supports_load_data_infile(&self) -> bool {
         true
     }

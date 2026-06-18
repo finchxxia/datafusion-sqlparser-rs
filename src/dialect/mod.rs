@@ -1306,6 +1306,18 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports double-quoted string literals as
+    /// values for `COMMENT` clauses.
+    fn supports_double_quoted_comment_string(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect supports `ON UPDATE <expr>` as a column
+    /// option in `CREATE TABLE`.
+    fn supports_column_on_update_option(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports PartiQL for querying semi-structured data
     /// <https://partiql.org/index.html>
     fn supports_partiql(&self) -> bool {
