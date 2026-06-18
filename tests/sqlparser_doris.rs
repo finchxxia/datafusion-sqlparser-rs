@@ -44,6 +44,8 @@ fn doris_identifier_and_string_literal_gates() {
     assert!(dialect.supports_numeric_prefix());
     assert!(dialect.supports_parenthesized_auto_increment_column_option());
     assert!(dialect.supports_column_aggregation_function_option());
+    assert!(dialect.supports_double_quoted_comment_string());
+    assert!(dialect.supports_column_on_update_option());
 }
 
 #[test]
@@ -681,4 +683,62 @@ fn ansi_rejects_doris_load_data_infile() {
     let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
     let sql = "LOAD DATA LOCAL INFILE 'test' INTO TABLE t PROPERTIES ('timeout' = '100')";
     assert!(ansi.parse_sql_statements(sql).is_err());
+}
+
+#[test]
+fn parse_doris_create_table_with_on_update_timestamp() {
+    let stmt = doris().one_statement_parses_to(
+        r#"CREATE TABLE `sample_table` (
+  `id` bigint NOT NULL COMMENT "primary key",
+  `event_time` datetime NOT NULL COMMENT "event time",
+  `name` varchar(64) NULL DEFAULT "" COMMENT "display name",
+  `_sequence` bigint NULL COMMENT "sequence column",
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT "updated at",
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT "created at"
+) ENGINE=OLAP
+UNIQUE KEY(`id`, `event_time`)
+AUTO PARTITION BY RANGE (date_trunc(`event_time`, 'month'))()
+DISTRIBUTED BY HASH(`id`) BUCKETS 2
+PROPERTIES (
+"function_column.sequence_col" = "_sequence"
+)"#,
+        "",
+    );
+
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            columns,
+            table_model:
+                Some(TableModel {
+                    key_model: Some(key_model),
+                    partitioning: Some(partitioning),
+                    distribution:
+                        Some(TableDistribution::Hash {
+                            columns: dist_columns,
+                            buckets,
+                        }),
+                    properties,
+                    ..
+                }),
+            ..
+        }) => {
+            assert_eq!(columns.len(), 6);
+            let update_column = columns
+                .iter()
+                .find(|column| column.name.value == "updated_at")
+                .expect("updated_at column");
+            assert!(update_column.options.iter().any(|option| {
+                matches!(&option.option, ColumnOption::OnUpdate(expr) if expr.to_string() == "CURRENT_TIMESTAMP")
+            }));
+
+            assert_eq!(key_model.kind, TableKeyModelKind::Unique);
+            assert!(partitioning.auto);
+            assert_eq!(partitioning.kind, TablePartitioningKind::Range);
+            assert!(partitioning.partitions.is_empty());
+            assert_eq!(dist_columns, vec![Ident::with_quote('`', "id")]);
+            assert_eq!(buckets, Some(BucketCount::Count(2)));
+            assert_eq!(properties.len(), 1);
+        }
+        _ => panic!("Expected Doris CreateTable with table model"),
+    }
 }
