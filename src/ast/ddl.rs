@@ -1936,7 +1936,7 @@ pub enum ColumnOption {
     /// `CHECK (<expr>)`
     Check(CheckConstraint),
     /// Dialect-specific options, such as:
-    /// - MySQL's `AUTO_INCREMENT` or SQLite's `AUTOINCREMENT`
+    /// - SQLite's `AUTOINCREMENT`
     /// - ...
     DialectSpecific(Vec<Token>),
     /// `CHARACTER SET <name>` column option
@@ -2011,8 +2011,8 @@ pub enum ColumnOption {
     Invisible,
     /// Column-level auto-increment option with an optional start value.
     ///
-    /// MySQL and Generic use this unified AST node without a start value.
-    /// Dialects that support a start value can use `Some`.
+    /// MySQL, Generic, and Doris use this unified AST node. Doris also supports
+    /// the optional parenthesized start value.
     /// Syntax: `AUTO_INCREMENT` or `AUTO_INCREMENT(<start_value>)`.
     AutoIncrement(Option<u64>),
 }
@@ -2164,11 +2164,11 @@ impl fmt::Display for ColumnOption {
                 write!(f, "INVISIBLE")
             }
             AutoIncrement(start) => {
-                f.write_str("AUTO_INCREMENT")?;
                 if let Some(start) = start {
-                    write!(f, "({start})")?;
+                    write!(f, "AUTO_INCREMENT({start})")
+                } else {
+                    write!(f, "AUTO_INCREMENT")
                 }
-                Ok(())
             }
         }
     }
@@ -3033,7 +3033,187 @@ impl fmt::Display for TableDistribution {
     }
 }
 
-/// Grouped table model clauses such as engine, key model, distribution, and properties.
+/// Table partitioning strategy.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum TablePartitioningKind {
+    /// `PARTITION BY RANGE`.
+    Range,
+    /// `PARTITION BY LIST`.
+    List,
+}
+
+impl fmt::Display for TablePartitioningKind {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(match self {
+            TablePartitioningKind::Range => "RANGE",
+            TablePartitioningKind::List => "LIST",
+        })
+    }
+}
+
+/// Table partitioning value specification.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum TablePartitioningValues {
+    /// `VALUES LESS THAN (...)`.
+    LessThan(Vec<Expr>),
+    /// `VALUES LESS THAN MAXVALUE`.
+    LessThanMaxValue,
+    /// `VALUES IN (...)`.
+    In(Vec<Vec<Expr>>),
+    /// `VALUES [("start"), ("end"))` — fixed range with half-open interval.
+    FixedRange {
+        /// Lower bound (inclusive).
+        start: Vec<Expr>,
+        /// Upper bound (exclusive).
+        end: Vec<Expr>,
+    },
+}
+
+impl fmt::Display for TablePartitioningValues {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            TablePartitioningValues::LessThan(values) => {
+                write!(f, "VALUES LESS THAN ({})", display_comma_separated(values))
+            }
+            TablePartitioningValues::LessThanMaxValue => f.write_str("VALUES LESS THAN MAXVALUE"),
+            TablePartitioningValues::In(values) => {
+                let values = values
+                    .iter()
+                    .map(|value| format!("({})", display_comma_separated(value)))
+                    .collect::<Vec<_>>();
+                write!(f, "VALUES IN ({})", display_comma_separated(&values))
+            }
+            TablePartitioningValues::FixedRange { start, end } => {
+                write!(
+                    f,
+                    "VALUES [({}), ({}))",
+                    display_comma_separated(start),
+                    display_comma_separated(end)
+                )
+            }
+        }
+    }
+}
+
+/// One partitioning definition inside `PARTITION BY ... (...)`.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub struct TablePartitioningDefinition {
+    /// `IF NOT EXISTS` clause.
+    pub if_not_exists: bool,
+    /// Partition name.
+    pub name: Ident,
+    /// Partition values.
+    pub values: TablePartitioningValues,
+    /// Optional per-partition properties.
+    pub properties: Vec<SqlOption>,
+}
+
+impl fmt::Display for TablePartitioningDefinition {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("PARTITION ")?;
+        if self.if_not_exists {
+            f.write_str("IF NOT EXISTS ")?;
+        }
+        write!(f, "{} {}", self.name, self.values)?;
+        if !self.properties.is_empty() {
+            write!(
+                f,
+                " PROPERTIES ({})",
+                display_comma_separated(&self.properties)
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// A single entry in a partitioning definition list.
+///
+/// Can be either a named partition or a batch range definition.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum TablePartitioningEntry {
+    /// Named partition: `PARTITION <name> VALUES ...`
+    Definition(TablePartitioningDefinition),
+    /// Batch range: `FROM (...) TO (...) INTERVAL <n> [<unit>]`
+    BatchRange {
+        /// Lower bound values.
+        from: Vec<Expr>,
+        /// Upper bound values.
+        to: Vec<Expr>,
+        /// Interval numeric value.
+        interval_value: u64,
+        /// Optional interval unit (e.g. DAY, MONTH).
+        interval_unit: Option<Ident>,
+    },
+}
+
+impl fmt::Display for TablePartitioningEntry {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            TablePartitioningEntry::Definition(def) => def.fmt(f),
+            TablePartitioningEntry::BatchRange {
+                from,
+                to,
+                interval_value,
+                interval_unit,
+            } => {
+                write!(
+                    f,
+                    "FROM ({}) TO ({}) INTERVAL {}",
+                    display_comma_separated(from),
+                    display_comma_separated(to),
+                    interval_value
+                )?;
+                if let Some(unit) = interval_unit {
+                    write!(f, " {unit}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// `PARTITION BY RANGE|LIST` clause.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub struct TablePartitioning {
+    /// Whether the clause starts with `AUTO PARTITION`.
+    pub auto: bool,
+    /// Partition strategy.
+    pub kind: TablePartitioningKind,
+    /// Partition columns/expressions (supports multiple columns).
+    pub columns: Vec<Expr>,
+    /// Explicit partition definitions.
+    pub partitions: Vec<TablePartitioningEntry>,
+}
+
+impl fmt::Display for TablePartitioning {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if self.auto {
+            f.write_str("AUTO ")?;
+        }
+        write!(
+            f,
+            "PARTITION BY {}({})",
+            self.kind,
+            display_comma_separated(&self.columns)
+        )?;
+        if !self.partitions.is_empty() {
+            write!(f, " ({})", display_comma_separated(&self.partitions))?;
+        }
+        Ok(())
+    }
+}
+
+/// Grouped table model clauses such as engine, key model, partitioning, distribution, and properties.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
@@ -3044,6 +3224,8 @@ pub struct TableModel {
     pub key_model: Option<TableKeyModel>,
     /// Table-level `COMMENT '<text>'`.
     pub comment: Option<String>,
+    /// Table partitioning clause.
+    pub partitioning: Option<TablePartitioning>,
     /// Table distribution clause.
     pub distribution: Option<TableDistribution>,
     /// Table model properties.
@@ -3067,6 +3249,10 @@ impl fmt::Display for TableModel {
                 "{separator}COMMENT '{}'",
                 escape_single_quote_string(comment)
             )?;
+            separator = " ";
+        }
+        if let Some(partitioning) = &self.partitioning {
+            write!(f, "{separator}{partitioning}")?;
             separator = " ";
         }
         if let Some(distribution) = &self.distribution {
@@ -3162,7 +3348,7 @@ pub struct CreateTable {
     /// Snowflake: Table clustering list which contains base column, expressions on base columns.
     /// <https://docs.snowflake.com/en/user-guide/tables-clustering-keys#defining-a-clustering-key-for-a-table>
     pub cluster_by: Option<WrappedCollection<Vec<Expr>>>,
-    /// Grouped table model clauses such as engine, key model, distribution, and properties.
+    /// Grouped table model clauses such as engine, key model, partitioning, distribution, and properties.
     pub table_model: Option<TableModel>,
     /// Hive: Table clustering column list.
     /// <https://cwiki.apache.org/confluence/display/Hive/LanguageManual+DDL#LanguageManualDDL-CreateTable>
