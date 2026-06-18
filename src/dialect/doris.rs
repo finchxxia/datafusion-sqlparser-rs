@@ -94,4 +94,12 @@ impl Dialect for DorisDialect {
     fn supports_map_literal_with_angle_brackets(&self) -> bool {
         true
     }
+
+    fn supports_double_quoted_comment_string(&self) -> bool {
+        true
+    }
+
+    fn supports_column_on_update_option(&self) -> bool {
+        true
+    }
 }

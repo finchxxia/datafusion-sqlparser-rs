@@ -217,6 +217,11 @@ impl Dialect for MySqlDialect {
         true
     }
 
+    /// See: <https://dev.mysql.com/doc/refman/8.4/en/timestamp-initialization.html>
+    fn supports_column_on_update_option(&self) -> bool {
+        true
+    }
+
     /// See: <https://dev.mysql.com/doc/refman/9.7/en/group-by-modifiers.html>
     fn supports_group_by_with_modifier(&self) -> bool {
         true
