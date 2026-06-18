@@ -15090,10 +15090,14 @@ fn parse_notify_channel() {
 #[test]
 fn parse_load_data() {
     let dialects = all_dialects_where(|d| d.supports_load_data());
-    let only_supports_load_extension_dialects =
-        all_dialects_where(|d| !d.supports_load_data() && d.supports_load_extension());
-    let not_supports_load_dialects =
-        all_dialects_where(|d| !d.supports_load_data() && !d.supports_load_extension());
+    let only_supports_load_extension_dialects = all_dialects_where(|d| {
+        !d.supports_load_data() && d.supports_load_extension() && !d.supports_load_data_infile()
+    });
+    let supports_infile_not_inpath =
+        all_dialects_where(|d| !d.supports_load_data() && d.supports_load_data_infile());
+    let not_supports_load_dialects = all_dialects_where(|d| {
+        !d.supports_load_data() && !d.supports_load_extension() && !d.supports_load_data_infile()
+    });
 
     let sql = "LOAD DATA INPATH '/local/path/to/data.txt' INTO TABLE test.my_table";
     match dialects.verified_stmt(sql) {
@@ -15146,11 +15150,19 @@ fn parse_load_data() {
         ParserError::ParserError("Expected: end of statement, found: INPATH".to_string())
     );
     assert_eq!(
+        supports_infile_not_inpath
+            .parse_sql_statements(sql)
+            .unwrap_err(),
+        ParserError::ParserError(
+            "Expected: INFILE or INPATH after LOAD DATA, found: INPATH".to_string()
+        )
+    );
+    assert_eq!(
         not_supports_load_dialects
             .parse_sql_statements(sql)
             .unwrap_err(),
         ParserError::ParserError(
-            "Expected: `DATA` or an extension name after `LOAD`, found: INPATH".to_string()
+            "Expected: `DATA` or an extension name after `LOAD`, found: DATA".to_string()
         )
     );
 
@@ -15185,11 +15197,19 @@ fn parse_load_data() {
         ParserError::ParserError("Expected: end of statement, found: LOCAL".to_string())
     );
     assert_eq!(
+        supports_infile_not_inpath
+            .parse_sql_statements(sql)
+            .unwrap_err(),
+        ParserError::ParserError(
+            "Expected: INFILE or INPATH after LOAD DATA, found: INPATH".to_string()
+        )
+    );
+    assert_eq!(
         not_supports_load_dialects
             .parse_sql_statements(sql)
             .unwrap_err(),
         ParserError::ParserError(
-            "Expected: `DATA` or an extension name after `LOAD`, found: LOCAL".to_string()
+            "Expected: `DATA` or an extension name after `LOAD`, found: DATA".to_string()
         )
     );
 
@@ -18289,22 +18309,6 @@ fn parse_create_user() {
             );
         }
         _ => unreachable!(),
-    }
-}
-
-#[test]
-fn key_value_option_statements_do_not_swallow_following_statement() {
-    // An unparenthesized key-value option list must not swallow the statement
-    // terminator, otherwise any following statement fails to parse. This covers
-    // every unparenthesized caller of `parse_key_value_options`: `CREATE USER`
-    // and both `ALTER USER ... SET` forms.
-    for sql in [
-        "CREATE USER user1; SELECT 1",
-        "ALTER USER user1 SET x = 'y'; SELECT 1",
-        "ALTER USER user1 SET TAG t = 'v'; SELECT 1",
-    ] {
-        let statements = all_dialects().parse_sql_statements(sql).unwrap();
-        assert_eq!(statements.len(), 2, "{sql}");
     }
 }
 

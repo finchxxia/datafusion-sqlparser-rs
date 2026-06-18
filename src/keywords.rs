@@ -520,6 +520,7 @@ define_keywords!(
     INCREMENTAL,
     INDEX,
     INDICATOR,
+    INFILE,
     INHERIT,
     INHERITS,
     INITIALIZE,

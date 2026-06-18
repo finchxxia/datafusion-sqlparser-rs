@@ -1200,6 +1200,12 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports MySQL-compatible `LOAD DATA`
+    /// statements with `INFILE` and optional `PROPERTIES`.
+    fn supports_load_data_infile(&self) -> bool {
+        false
+    }
+
     /// Returns true if this dialect expects the `TOP` option
     /// before the `ALL`/`DISTINCT` options in a `SELECT` statement.
     fn supports_top_before_distinct(&self) -> bool {

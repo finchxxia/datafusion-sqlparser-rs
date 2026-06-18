@@ -20360,26 +20360,49 @@ impl<'a> Parser<'a> {
 
     /// Parse a SQL LOAD statement
     pub fn parse_load(&mut self) -> Result<Statement, ParserError> {
-        if self.peek_keyword(Keyword::DATA) && self.dialect.supports_load_data() {
+        if self.peek_keyword(Keyword::DATA)
+            && (self.dialect.supports_load_data_infile() || self.dialect.supports_load_data())
+        {
             self.expect_keyword_is(Keyword::DATA)?;
             let local = self.parse_keyword(Keyword::LOCAL);
 
-            self.expect_keyword_is(Keyword::INPATH)?;
-            let inpath = self.parse_literal_string()?;
-            let overwrite = self.parse_one_of_keywords(&[Keyword::OVERWRITE]).is_some();
-            self.expect_keyword_is(Keyword::INTO)?;
-            self.expect_keyword_is(Keyword::TABLE)?;
-            let table_name = self.parse_object_name(false)?;
-            let partitioned = self.parse_insert_partition()?;
-            let table_format = self.parse_load_data_table_format()?;
-            Ok(Statement::LoadData {
-                local,
-                inpath,
-                overwrite,
-                table_name,
-                partitioned,
-                table_format,
-            })
+            if self.peek_keyword(Keyword::INFILE) && self.dialect.supports_load_data_infile() {
+                self.expect_keyword_is(Keyword::INFILE)?;
+                let infile = self.parse_literal_string()?;
+                self.expect_keyword_is(Keyword::INTO)?;
+                self.expect_keyword_is(Keyword::TABLE)?;
+                let table_name = self.parse_object_name(false)?;
+                let properties = if self.peek_keyword(Keyword::PROPERTIES) {
+                    self.parse_options(Keyword::PROPERTIES)?
+                } else {
+                    vec![]
+                };
+                Ok(Statement::DorisLoadData {
+                    local,
+                    infile,
+                    table_name,
+                    properties,
+                })
+            } else if self.dialect.supports_load_data() {
+                self.expect_keyword_is(Keyword::INPATH)?;
+                let inpath = self.parse_literal_string()?;
+                let overwrite = self.parse_one_of_keywords(&[Keyword::OVERWRITE]).is_some();
+                self.expect_keyword_is(Keyword::INTO)?;
+                self.expect_keyword_is(Keyword::TABLE)?;
+                let table_name = self.parse_object_name(false)?;
+                let partitioned = self.parse_insert_partition()?;
+                let table_format = self.parse_load_data_table_format()?;
+                Ok(Statement::LoadData {
+                    local,
+                    inpath,
+                    overwrite,
+                    table_name,
+                    partitioned,
+                    table_format,
+                })
+            } else {
+                self.expected("INFILE or INPATH after LOAD DATA", self.peek_token())
+            }
         } else if self.dialect.supports_load_extension() {
             let extension_name = self.parse_identifier()?;
             Ok(Statement::Load { extension_name })

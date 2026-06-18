@@ -94,4 +94,8 @@ impl Dialect for DorisDialect {
     fn supports_map_literal_with_angle_brackets(&self) -> bool {
         true
     }
+
+    fn supports_load_data_infile(&self) -> bool {
+        true
+    }
 }

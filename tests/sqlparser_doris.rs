@@ -60,6 +60,7 @@ fn doris_and_generic_enable_doris_create_table_model_gates() {
         assert!(dialect.supports_create_table_key_model_clause());
         assert!(dialect.supports_create_table_distribution_clause());
         assert!(dialect.supports_create_table_properties_clause());
+        assert!(dialect.supports_load_data_infile());
     }
     assert!(DorisDialect {}.supports_create_table_model_clause_without_marker());
     assert!(!GenericDialect {}.supports_create_table_model_clause_without_marker());
@@ -495,6 +496,59 @@ fn ast_doris_batch_range_partition() {
 }
 
 #[test]
+fn parse_doris_load_data_infile() {
+    doris_and_generic().verified_stmt(
+        "LOAD DATA LOCAL INFILE 'testData' INTO TABLE testDb.testTbl PROPERTIES ('timeout' = '100')",
+    );
+}
+
+#[test]
+fn parse_doris_load_data_infile_no_local() {
+    doris_and_generic().verified_stmt("LOAD DATA INFILE 'testData' INTO TABLE testDb.testTbl");
+}
+
+#[test]
+fn ast_doris_load_data_is_structured() {
+    let sql =
+        "LOAD DATA LOCAL INFILE 'testData' INTO TABLE testDb.testTbl PROPERTIES ('timeout' = '100')";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::DorisLoadData {
+            local,
+            infile,
+            table_name,
+            properties,
+        } => {
+            assert!(local);
+            assert_eq!(infile, "testData");
+            assert_eq!(table_name.to_string(), "testDb.testTbl");
+            assert_eq!(properties.len(), 1);
+        }
+        _ => panic!("Expected DorisLoadData"),
+    }
+}
+
+#[test]
+fn ast_doris_load_data_no_local_no_properties() {
+    let sql = "LOAD DATA INFILE 'path/to/file' INTO TABLE db.tbl";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::DorisLoadData {
+            local,
+            infile,
+            table_name,
+            properties,
+        } => {
+            assert!(!local);
+            assert_eq!(infile, "path/to/file");
+            assert_eq!(table_name.to_string(), "db.tbl");
+            assert!(properties.is_empty());
+        }
+        _ => panic!("Expected DorisLoadData"),
+    }
+}
+
+#[test]
 fn generic_engine_without_model_marker_remains_plain_options() {
     let generic = TestedDialects::new(vec![Box::new(GenericDialect {})]);
     let sql = "CREATE TABLE t (k BIGINT) ENGINE = InnoDB";
@@ -620,4 +674,11 @@ fn parse_doris_struct_type() {
 #[test]
 fn parse_doris_nested_complex_types() {
     doris().verified_stmt("CREATE TABLE t (a ARRAY<MAP<STRING, INT>>)");
+}
+
+#[test]
+fn ansi_rejects_doris_load_data_infile() {
+    let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
+    let sql = "LOAD DATA LOCAL INFILE 'test' INTO TABLE t PROPERTIES ('timeout' = '100')";
+    assert!(ansi.parse_sql_statements(sql).is_err());
 }
