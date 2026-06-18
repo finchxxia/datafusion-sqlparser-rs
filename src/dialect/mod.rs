@@ -1240,10 +1240,27 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect accepts a comma-separated list of table-level
+    /// options placed between the table name and the column-list parenthesis, e.g.
+    ///
+    /// ```sql
+    /// CREATE TABLE foo, NO FALLBACK, NO BEFORE JOURNAL (col INTEGER)
+    /// ```
+    fn supports_leading_comma_before_table_options(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports table key model clauses after a
     /// `CREATE TABLE` column list, such as `DUPLICATE KEY (...)`,
     /// `UNIQUE KEY (...)`, or `AGGREGATE KEY (...)`.
     fn supports_create_table_key_model_clause(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect supports range/list partitioning clauses in
+    /// `CREATE TABLE`, such as `PARTITION BY RANGE(dt) (...)` or
+    /// `AUTO PARTITION BY RANGE(...)`.
+    fn supports_create_table_range_list_partitioning_clause(&self) -> bool {
         false
     }
 
@@ -1275,16 +1292,6 @@ pub trait Dialect: Debug + Any {
     /// Returns true if the dialect supports a `PROPERTIES (...)` option in an
     /// inline table index definition, for example Apache Doris.
     fn supports_table_index_properties_option(&self) -> bool {
-        false
-    }
-
-    /// Returns true if the dialect accepts a comma-separated list of table-level
-    /// options placed between the table name and the column-list parenthesis, e.g.
-    ///
-    /// ```sql
-    /// CREATE TABLE foo, NO FALLBACK, NO BEFORE JOURNAL (col INTEGER)
-    /// ```
-    fn supports_leading_comma_before_table_options(&self) -> bool {
         false
     }
 

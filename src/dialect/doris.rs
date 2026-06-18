@@ -63,6 +63,10 @@ impl Dialect for DorisDialect {
         true
     }
 
+    fn supports_create_table_range_list_partitioning_clause(&self) -> bool {
+        true
+    }
+
     fn supports_create_table_distribution_clause(&self) -> bool {
         true
     }

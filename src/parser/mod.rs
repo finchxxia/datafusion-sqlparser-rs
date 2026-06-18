@@ -399,6 +399,7 @@ struct TableModelClauses {
     engine: Option<Ident>,
     key_model: Option<TableKeyModel>,
     comment: Option<String>,
+    partitioning: Option<TablePartitioning>,
     distribution: Option<TableDistribution>,
     properties: Vec<SqlOption>,
 }
@@ -408,6 +409,7 @@ impl TableModelClauses {
         self.engine.is_none()
             && self.key_model.is_none()
             && self.comment.is_none()
+            && self.partitioning.is_none()
             && self.distribution.is_none()
             && self.properties.is_empty()
     }
@@ -420,6 +422,7 @@ impl TableModelClauses {
                 engine: self.engine,
                 key_model: self.key_model,
                 comment: self.comment,
+                partitioning: self.partitioning,
                 distribution: self.distribution,
                 properties: self.properties,
             })
@@ -9958,7 +9961,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse Doris-compatible `CREATE TABLE` table model clauses in official order:
-    /// `[ENGINE = ...] [KEY_MODEL] [COMMENT '...'] [DISTRIBUTION] [PROPERTIES]`
+    /// `[ENGINE = ...] [KEY_MODEL] [COMMENT '...'] [PARTITION] [DISTRIBUTION] [PROPERTIES]`
     ///
     /// Uses save/restore to avoid consuming tokens when no table model
     /// clause is found, so the generic parser can handle MySQL/ClickHouse
@@ -9967,6 +9970,9 @@ impl<'a> Parser<'a> {
         &mut self,
     ) -> Result<Option<TableModel>, ParserError> {
         if !self.dialect.supports_create_table_key_model_clause()
+            && !self
+                .dialect
+                .supports_create_table_range_list_partitioning_clause()
             && !self.dialect.supports_create_table_distribution_clause()
             && !self.dialect.supports_create_table_properties_clause()
             && !self
@@ -9981,15 +9987,18 @@ impl<'a> Parser<'a> {
         let engine = self.parse_optional_doris_engine()?;
         let key_model = self.parse_optional_doris_key_model()?;
         let comment = self.parse_optional_doris_table_comment()?;
+        let partitioning = self.parse_optional_doris_partition()?;
         let distribution = self.parse_optional_doris_distribution()?;
         let properties = self.parse_optional_doris_properties()?;
 
-        // Key model, distribution and PROPERTIES (the keyword, not
-        // WITH/OPTIONS) are unambiguous table model markers. GenericDialect
+        // Key model, partition, distribution and PROPERTIES (the keyword,
+        // not WITH/OPTIONS) are unambiguous table model markers. GenericDialect
         // only commits to the table model path for those markers, so
         // MySQL/ClickHouse-style ENGINE and COMMENT remain plain table options.
-        let has_unambiguous_marker =
-            key_model.is_some() || distribution.is_some() || !properties.is_empty();
+        let has_unambiguous_marker = key_model.is_some()
+            || partitioning.is_some()
+            || distribution.is_some()
+            || !properties.is_empty();
         let has_markerless_model_clause = self
             .dialect
             .supports_create_table_model_clause_without_marker()
@@ -10004,6 +10013,7 @@ impl<'a> Parser<'a> {
             engine,
             key_model,
             comment,
+            partitioning,
             distribution,
             properties,
         }
@@ -10097,6 +10107,196 @@ impl<'a> Parser<'a> {
             Ok(Some(TableDistribution::Random { buckets }))
         } else {
             self.expected("HASH or RANDOM after DISTRIBUTED BY", self.peek_token())
+        }
+    }
+
+    fn parse_optional_doris_partition(&mut self) -> Result<Option<TablePartitioning>, ParserError> {
+        if !self
+            .dialect
+            .supports_create_table_range_list_partitioning_clause()
+        {
+            return Ok(None);
+        }
+
+        let index = self.index;
+        let auto = self.parse_keyword(Keyword::AUTO);
+        if !self.parse_keywords(&[Keyword::PARTITION, Keyword::BY]) {
+            if auto {
+                return self.expected("PARTITION BY after AUTO", self.peek_token());
+            }
+            return Ok(None);
+        }
+
+        let kind = if self.parse_keyword(Keyword::RANGE) {
+            TablePartitioningKind::Range
+        } else if self.parse_keyword(Keyword::LIST) {
+            TablePartitioningKind::List
+        } else {
+            self.index = index;
+            return Ok(None);
+        };
+
+        self.expect_token(&Token::LParen)?;
+        let columns = self.parse_comma_separated(Parser::parse_expr)?;
+        self.expect_token(&Token::RParen)?;
+
+        let partitions = if self.consume_token(&Token::LParen) {
+            let partitions =
+                self.parse_comma_separated0(Parser::parse_doris_partition_entry, Token::RParen)?;
+            self.expect_token(&Token::RParen)?;
+            partitions
+        } else {
+            vec![]
+        };
+
+        // When there are no explicit partition definitions, we must
+        // distinguish Doris `PARTITION BY RANGE(col) DISTRIBUTED BY ...`
+        // from PostgreSQL `PARTITION BY RANGE(col)`.  Only commit to the
+        // Doris path when a recognisable Doris follow-up keyword is next.
+        if !auto && partitions.is_empty() {
+            let is_doris_follow_up =
+                self.peek_keyword(Keyword::DISTRIBUTED) || self.peek_keyword(Keyword::PROPERTIES);
+            if !is_doris_follow_up {
+                self.index = index;
+                return Ok(None);
+            }
+        }
+
+        Ok(Some(TablePartitioning {
+            auto,
+            kind,
+            columns,
+            partitions,
+        }))
+    }
+
+    fn parse_doris_partition_entry(&mut self) -> Result<TablePartitioningEntry, ParserError> {
+        if self.parse_keyword(Keyword::FROM) {
+            self.expect_token(&Token::LParen)?;
+            let from = self.parse_comma_separated(Parser::parse_expr)?;
+            self.expect_token(&Token::RParen)?;
+            self.expect_keyword_is(Keyword::TO)?;
+            self.expect_token(&Token::LParen)?;
+            let to = self.parse_comma_separated(Parser::parse_expr)?;
+            self.expect_token(&Token::RParen)?;
+            self.expect_keyword_is(Keyword::INTERVAL)?;
+            let interval_token = self.next_token();
+            let interval_value = match interval_token.token {
+                Token::Number(ref n, _) => n.parse::<u64>().map_err(|e| {
+                    ParserError::ParserError(format!("Expected integer for INTERVAL value: {e}"))
+                })?,
+                _ => {
+                    return self.expected("integer value after INTERVAL", interval_token);
+                }
+            };
+            let interval_unit = if self.peek_token().token != Token::Comma
+                && self.peek_token().token != Token::RParen
+            {
+                Some(self.parse_identifier()?)
+            } else {
+                None
+            };
+            Ok(TablePartitioningEntry::BatchRange {
+                from,
+                to,
+                interval_value,
+                interval_unit,
+            })
+        } else {
+            Ok(TablePartitioningEntry::Definition(
+                self.parse_doris_partition_definition()?,
+            ))
+        }
+    }
+
+    fn parse_doris_partition_definition(
+        &mut self,
+    ) -> Result<TablePartitioningDefinition, ParserError> {
+        self.expect_keyword_is(Keyword::PARTITION)?;
+        let if_not_exists = self.parse_keywords(&[Keyword::IF, Keyword::NOT, Keyword::EXISTS]);
+        let name = self.parse_identifier()?;
+        self.expect_keyword_is(Keyword::VALUES)?;
+
+        let values = if self.parse_keywords(&[Keyword::LESS, Keyword::THAN]) {
+            if self.parse_doris_maxvalue_token() {
+                TablePartitioningValues::LessThanMaxValue
+            } else {
+                self.expect_token(&Token::LParen)?;
+                let values = self.parse_comma_separated(Parser::parse_expr)?;
+                self.expect_token(&Token::RParen)?;
+                Self::normalize_doris_less_than(values)
+            }
+        } else if self.parse_keyword(Keyword::IN) {
+            self.expect_token(&Token::LParen)?;
+            let values = self.parse_comma_separated(Parser::parse_doris_partition_value_tuple)?;
+            self.expect_token(&Token::RParen)?;
+            TablePartitioningValues::In(values)
+        } else if self.consume_token(&Token::LBracket) {
+            self.expect_token(&Token::LParen)?;
+            let start = self.parse_comma_separated(Parser::parse_expr)?;
+            self.expect_token(&Token::RParen)?;
+            self.expect_token(&Token::Comma)?;
+            self.expect_token(&Token::LParen)?;
+            let end = self.parse_comma_separated(Parser::parse_expr)?;
+            self.expect_token(&Token::RParen)?;
+            self.expect_token(&Token::RParen)?;
+            TablePartitioningValues::FixedRange { start, end }
+        } else {
+            return self.expected(
+                "LESS THAN, IN, or [ after PARTITION VALUES",
+                self.peek_token(),
+            );
+        };
+
+        let properties = if self.peek_keyword(Keyword::PROPERTIES) {
+            self.parse_options(Keyword::PROPERTIES)?
+        } else {
+            vec![]
+        };
+
+        Ok(TablePartitioningDefinition {
+            if_not_exists,
+            name,
+            values,
+            properties,
+        })
+    }
+
+    /// Try to consume `MAXVALUE` or `MAX_VALUE` (the Doris alternative spelling).
+    fn parse_doris_maxvalue_token(&mut self) -> bool {
+        if self.parse_keyword(Keyword::MAXVALUE) {
+            return true;
+        }
+        if let Token::Word(w) = &self.peek_token().token {
+            if w.value.eq_ignore_ascii_case("MAX_VALUE") && w.quote_style.is_none() {
+                self.next_token();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Normalize a single `MAXVALUE` or `MAX_VALUE` identifier inside parentheses
+    /// to `LessThanMaxValue`, e.g. `VALUES LESS THAN (MAXVALUE)`.
+    fn normalize_doris_less_than(values: Vec<Expr>) -> TablePartitioningValues {
+        if values.len() == 1 {
+            if let Expr::Identifier(ref ident) = values[0] {
+                let upper = ident.value.to_uppercase();
+                if (upper == "MAXVALUE" || upper == "MAX_VALUE") && ident.quote_style.is_none() {
+                    return TablePartitioningValues::LessThanMaxValue;
+                }
+            }
+        }
+        TablePartitioningValues::LessThan(values)
+    }
+
+    fn parse_doris_partition_value_tuple(&mut self) -> Result<Vec<Expr>, ParserError> {
+        if self.consume_token(&Token::LParen) {
+            let values = self.parse_comma_separated(Parser::parse_expr)?;
+            self.expect_token(&Token::RParen)?;
+            Ok(values)
+        } else {
+            Ok(vec![self.parse_expr()?])
         }
     }
 
@@ -20160,11 +20360,10 @@ impl<'a> Parser<'a> {
 
     /// Parse a SQL LOAD statement
     pub fn parse_load(&mut self) -> Result<Statement, ParserError> {
-        if self.dialect.supports_load_extension() {
-            let extension_name = self.parse_identifier()?;
-            Ok(Statement::Load { extension_name })
-        } else if self.parse_keyword(Keyword::DATA) && self.dialect.supports_load_data() {
-            let local = self.parse_one_of_keywords(&[Keyword::LOCAL]).is_some();
+        if self.peek_keyword(Keyword::DATA) && self.dialect.supports_load_data() {
+            self.expect_keyword_is(Keyword::DATA)?;
+            let local = self.parse_keyword(Keyword::LOCAL);
+
             self.expect_keyword_is(Keyword::INPATH)?;
             let inpath = self.parse_literal_string()?;
             let overwrite = self.parse_one_of_keywords(&[Keyword::OVERWRITE]).is_some();
@@ -20181,6 +20380,9 @@ impl<'a> Parser<'a> {
                 partitioned,
                 table_format,
             })
+        } else if self.dialect.supports_load_extension() {
+            let extension_name = self.parse_identifier()?;
+            Ok(Statement::Load { extension_name })
         } else {
             self.expected_ref(
                 "`DATA` or an extension name after `LOAD`",
@@ -21076,11 +21278,7 @@ impl<'a> Parser<'a> {
                         return self.expected_ref(" another option or EOF", self.peek_token_ref());
                     }
                 }
-                Token::EOF => break,
-                Token::SemiColon => {
-                    self.prev_token();
-                    break;
-                }
+                Token::EOF | Token::SemiColon => break,
                 Token::Comma => {
                     delimiter = KeyValueOptionsDelimiter::Comma;
                     continue;

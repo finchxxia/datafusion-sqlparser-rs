@@ -767,7 +767,12 @@ pub(crate) struct CreateTableConfiguration {
 #[cfg(test)]
 mod tests {
     use crate::ast::helpers::stmt_create_table::CreateTableBuilder;
-    use crate::ast::{Ident, ObjectName, Statement};
+    use crate::ast::{
+        BucketCount, Expr, Ident, ObjectName, SqlOption, Statement, TableDistribution,
+        TableKeyModel, TableKeyModelKind, TableModel, TablePartitioning,
+        TablePartitioningDefinition, TablePartitioningEntry, TablePartitioningKind,
+        TablePartitioningValues, Value,
+    };
     use crate::parser::ParserError;
 
     #[test]
@@ -794,5 +799,54 @@ mod tests {
                 "Expected create table statement, but received: COMMIT".to_owned()
             )
         );
+    }
+
+    #[test]
+    fn test_table_model_builder_fields_round_trip() {
+        let key = Ident::new("k");
+        let partition_expr = Expr::Identifier(Ident::new("dt"));
+        let partition_value = Expr::Value(Value::SingleQuotedString("2024-01-01".into()).into());
+        let property_value = Expr::Value(Value::SingleQuotedString("1".into()).into());
+
+        let builder = CreateTableBuilder::new(ObjectName::from(vec![Ident::new("t")])).table_model(
+            Some(TableModel {
+                engine: Some(Ident::new("OLAP")),
+                key_model: Some(TableKeyModel {
+                    kind: TableKeyModelKind::Aggregate,
+                    columns: vec![key.clone()],
+                    order_by: None,
+                }),
+                comment: None,
+                partitioning: Some(TablePartitioning {
+                    auto: true,
+                    kind: TablePartitioningKind::Range,
+                    columns: vec![partition_expr],
+                    partitions: vec![TablePartitioningEntry::Definition(
+                        TablePartitioningDefinition {
+                            if_not_exists: false,
+                            name: Ident::new("p1"),
+                            values: TablePartitioningValues::LessThan(vec![partition_value]),
+                            properties: vec![],
+                        },
+                    )],
+                }),
+                distribution: Some(TableDistribution::Hash {
+                    columns: vec![key.clone()],
+                    buckets: Some(BucketCount::Auto),
+                }),
+                properties: vec![SqlOption::KeyValue {
+                    key: Ident::new("replication_num"),
+                    value: property_value,
+                }],
+            }),
+        );
+
+        let create_table = builder.clone().build();
+
+        assert_eq!(
+            create_table.to_string(),
+            "CREATE TABLE t () ENGINE = OLAP AGGREGATE KEY(k) AUTO PARTITION BY RANGE(dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01')) DISTRIBUTED BY HASH(k) BUCKETS AUTO PROPERTIES (replication_num = '1')"
+        );
+        assert_eq!(builder, CreateTableBuilder::from(create_table));
     }
 }
