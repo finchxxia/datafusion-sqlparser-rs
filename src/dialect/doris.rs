@@ -98,4 +98,8 @@ impl Dialect for DorisDialect {
     fn supports_load_data_infile(&self) -> bool {
         true
     }
+
+    fn supports_create_routine_load(&self) -> bool {
+        true
+    }
 }

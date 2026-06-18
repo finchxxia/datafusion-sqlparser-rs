@@ -61,6 +61,7 @@ fn doris_and_generic_enable_doris_create_table_model_gates() {
         assert!(dialect.supports_create_table_distribution_clause());
         assert!(dialect.supports_create_table_properties_clause());
         assert!(dialect.supports_load_data_infile());
+        assert!(dialect.supports_create_routine_load());
     }
     assert!(DorisDialect {}.supports_create_table_model_clause_without_marker());
     assert!(!GenericDialect {}.supports_create_table_model_clause_without_marker());
@@ -549,6 +550,94 @@ fn ast_doris_load_data_no_local_no_properties() {
 }
 
 #[test]
+fn parse_doris_create_routine_load_minimal() {
+    doris_and_generic().one_statement_parses_to(
+        "CREATE ROUTINE LOAD db.job ON tbl COLUMNS(k1, k2) PROPERTIES ('format' = 'json') FROM KAFKA ('kafka_topic' = 'topic1')",
+        "CREATE ROUTINE LOAD db.job ON tbl COLUMNS ( k1 , k2 ) PROPERTIES ('format' = 'json') FROM KAFKA ('kafka_topic' = 'topic1')",
+    );
+}
+
+#[test]
+fn parse_doris_create_routine_load_raw_load_properties_are_canonicalized() {
+    doris_and_generic().one_statement_parses_to(
+        "CREATE ROUTINE LOAD db.job ON tbl COLUMNS(k1, k2), WHERE k1 > 0 PROPERTIES ('format' = 'json') FROM KAFKA ('kafka_topic' = 'topic1')",
+        "CREATE ROUTINE LOAD db.job ON tbl COLUMNS ( k1 , k2 ) , WHERE k1 > 0 PROPERTIES ('format' = 'json') FROM KAFKA ('kafka_topic' = 'topic1')",
+    );
+}
+
+#[test]
+fn parse_doris_create_routine_load_no_load_properties() {
+    doris_and_generic().verified_stmt(
+        "CREATE ROUTINE LOAD db.job ON tbl PROPERTIES ('format' = 'json') FROM KAFKA ('kafka_topic' = 'topic1')",
+    );
+}
+
+#[test]
+fn parse_doris_create_routine_load_with_comment() {
+    doris_and_generic().verified_stmt(
+        "CREATE ROUTINE LOAD db.job ON tbl FROM KAFKA ('kafka_topic' = 'topic1') COMMENT 'test load job'",
+    );
+}
+
+#[test]
+fn parse_doris_create_routine_load_minimal_no_table() {
+    doris_and_generic()
+        .verified_stmt("CREATE ROUTINE LOAD db.job FROM KAFKA ('kafka_topic' = 'topic1')");
+}
+
+#[test]
+fn ast_doris_create_routine_load_is_structured() {
+    let sql = "CREATE ROUTINE LOAD db.job ON tbl PROPERTIES ('format' = 'json') FROM KAFKA ('kafka_topic' = 'topic1') COMMENT 'my job'";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateRoutineLoad {
+            name,
+            table_name,
+            load_properties,
+            job_properties,
+            data_source,
+            data_source_properties,
+            comment,
+        } => {
+            assert_eq!(name.to_string(), "db.job");
+            assert_eq!(table_name.unwrap().to_string(), "tbl");
+            assert!(load_properties.is_empty());
+            assert_eq!(job_properties.len(), 1);
+            assert_eq!(data_source, Ident::new("KAFKA"));
+            assert_eq!(data_source_properties.len(), 1);
+            assert_eq!(comment.unwrap(), "my job");
+        }
+        _ => panic!("Expected CreateRoutineLoad"),
+    }
+}
+
+#[test]
+fn ast_doris_create_routine_load_no_table_no_comment() {
+    let sql = "CREATE ROUTINE LOAD db.job FROM KAFKA ('kafka_topic' = 'topic1')";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateRoutineLoad {
+            name,
+            table_name,
+            load_properties,
+            job_properties,
+            data_source,
+            data_source_properties,
+            comment,
+        } => {
+            assert_eq!(name.to_string(), "db.job");
+            assert!(table_name.is_none());
+            assert!(load_properties.is_empty());
+            assert!(job_properties.is_empty());
+            assert_eq!(data_source, Ident::new("KAFKA"));
+            assert_eq!(data_source_properties.len(), 1);
+            assert!(comment.is_none());
+        }
+        _ => panic!("Expected CreateRoutineLoad"),
+    }
+}
+
+#[test]
 fn generic_engine_without_model_marker_remains_plain_options() {
     let generic = TestedDialects::new(vec![Box::new(GenericDialect {})]);
     let sql = "CREATE TABLE t (k BIGINT) ENGINE = InnoDB";
@@ -680,5 +769,12 @@ fn parse_doris_nested_complex_types() {
 fn ansi_rejects_doris_load_data_infile() {
     let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
     let sql = "LOAD DATA LOCAL INFILE 'test' INTO TABLE t PROPERTIES ('timeout' = '100')";
+    assert!(ansi.parse_sql_statements(sql).is_err());
+}
+
+#[test]
+fn ansi_rejects_doris_create_routine_load() {
+    let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
+    let sql = "CREATE ROUTINE LOAD db.job ON tbl FROM KAFKA ('kafka_topic' = 'topic1')";
     assert!(ansi.parse_sql_statements(sql).is_err());
 }

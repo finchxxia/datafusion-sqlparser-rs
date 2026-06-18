@@ -5354,6 +5354,11 @@ impl<'a> Parser<'a> {
             }
         } else if self.parse_keyword(Keyword::SERVER) {
             self.parse_pg_create_server()
+        } else if self.peek_keywords(&[Keyword::ROUTINE, Keyword::LOAD])
+            && self.dialect.supports_create_routine_load()
+        {
+            self.expect_keywords(&[Keyword::ROUTINE, Keyword::LOAD])?;
+            self.parse_create_routine_load()
         } else {
             self.expected_ref("an object type after CREATE", self.peek_token_ref())
         }
@@ -20412,6 +20417,59 @@ impl<'a> Parser<'a> {
                 self.peek_token_ref(),
             )
         }
+    }
+
+    /// Parse Doris `CREATE ROUTINE LOAD` statement.
+    ///
+    /// See <https://doris.apache.org/docs/3.x/sql-manual/sql-statements/data-modification/load-and-export/CREATE-ROUTINE-LOAD/>
+    fn parse_create_routine_load(&mut self) -> Result<Statement, ParserError> {
+        let name = self.parse_object_name(false)?;
+        let table_name = if self.parse_keyword(Keyword::ON) {
+            Some(self.parse_object_name(false)?)
+        } else {
+            None
+        };
+
+        let mut load_properties = vec![];
+        while !self.peek_keyword(Keyword::PROPERTIES) && !self.peek_keyword(Keyword::FROM) {
+            let token = self.next_token();
+            if token.token == Token::EOF {
+                return self.expected("PROPERTIES or FROM in CREATE ROUTINE LOAD", token);
+            }
+            load_properties.push(token.token);
+        }
+
+        let job_properties = if self.peek_keyword(Keyword::PROPERTIES) {
+            self.parse_options(Keyword::PROPERTIES)?
+        } else {
+            vec![]
+        };
+
+        self.expect_keyword_is(Keyword::FROM)?;
+        let data_source = self.parse_identifier()?;
+        let data_source_properties = if self.consume_token(&Token::LParen) {
+            let properties = self.parse_comma_separated(Parser::parse_sql_option)?;
+            self.expect_token(&Token::RParen)?;
+            properties
+        } else {
+            vec![]
+        };
+
+        let comment = if self.parse_keyword(Keyword::COMMENT) {
+            Some(self.parse_literal_string()?)
+        } else {
+            None
+        };
+
+        Ok(Statement::CreateRoutineLoad {
+            name,
+            table_name,
+            load_properties,
+            job_properties,
+            data_source,
+            data_source_properties,
+            comment,
+        })
     }
 
     /// ClickHouse:

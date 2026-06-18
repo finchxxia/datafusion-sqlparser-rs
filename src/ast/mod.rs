@@ -4892,6 +4892,37 @@ pub enum Statement {
         /// Optional table properties.
         properties: Vec<SqlOption>,
     },
+    /// Doris `CREATE ROUTINE LOAD` statement (framework AST).
+    ///
+    /// The full Doris routine-load grammar is complex; this implementation
+    /// captures load properties as raw tokens between the `ON <table>` and
+    /// `PROPERTIES`/`FROM` boundaries.  High-frequency sub-clauses (e.g.
+    /// `COLUMNS`, `WHERE`) should be gradually promoted to structured fields.
+    ///
+    /// **Note:** because `load_properties` stores raw tokens, the `Display`
+    /// output inserts a space between each token.  This means
+    /// `COLUMNS(k1, k2)` round-trips as `COLUMNS ( k1 , k2 )`.  Tests use
+    /// `one_statement_parses_to` to accept the canonical form.
+    ///
+    /// See <https://doris.apache.org/docs/3.x/sql-manual/sql-statements/data-modification/load-and-export/CREATE-ROUTINE-LOAD/>
+    CreateRoutineLoad {
+        /// Routine load job name.
+        name: ObjectName,
+        /// Optional target table name after `ON`.
+        table_name: Option<ObjectName>,
+        /// Load properties before job properties, stored as raw SQL tokens.
+        /// Display joins them with single spaces, so punctuation-tight input
+        /// (e.g. `COLUMNS(k1,k2)`) will be normalized to spaced form.
+        load_properties: Vec<Token>,
+        /// Job properties from `PROPERTIES (...)`.
+        job_properties: Vec<SqlOption>,
+        /// Data source name after `FROM` (e.g. `KAFKA`).
+        data_source: Ident,
+        /// Data source properties in `(<key> = <value>, ...)`.
+        data_source_properties: Vec<SqlOption>,
+        /// Optional trailing `COMMENT '...'`.
+        comment: Option<String>,
+    },
     /// ```sql
     /// Rename TABLE tbl_name TO new_tbl_name[, tbl_name2 TO new_tbl_name2] ...
     /// ```
@@ -5546,6 +5577,42 @@ impl fmt::Display for Statement {
                 )?;
                 if !properties.is_empty() {
                     write!(f, " PROPERTIES ({})", display_comma_separated(properties))?;
+                }
+                Ok(())
+            }
+            Statement::CreateRoutineLoad {
+                name,
+                table_name,
+                load_properties,
+                job_properties,
+                data_source,
+                data_source_properties,
+                comment,
+            } => {
+                write!(f, "CREATE ROUTINE LOAD {name}")?;
+                if let Some(table_name) = table_name {
+                    write!(f, " ON {table_name}")?;
+                }
+                if !load_properties.is_empty() {
+                    write!(f, " {}", display_separated(load_properties, " "))?;
+                }
+                if !job_properties.is_empty() {
+                    write!(
+                        f,
+                        " PROPERTIES ({})",
+                        display_comma_separated(job_properties)
+                    )?;
+                }
+                write!(f, " FROM {data_source}")?;
+                if !data_source_properties.is_empty() {
+                    write!(f, " ({})", display_comma_separated(data_source_properties))?;
+                }
+                if let Some(comment) = comment {
+                    write!(
+                        f,
+                        " COMMENT '{}'",
+                        value::escape_single_quote_string(comment)
+                    )?;
                 }
                 Ok(())
             }
