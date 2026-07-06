@@ -1424,6 +1424,8 @@ pub enum IndexType {
     BRIN,
     /// Bloom filter based index.
     Bloom,
+    /// Inverted index (e.g. Apache Doris `USING INVERTED`).
+    Inverted,
     /// Users may define their own index types, which would
     /// not be covered by the above variants.
     Custom(Ident),
@@ -1439,6 +1441,7 @@ impl fmt::Display for IndexType {
             Self::SPGiST => write!(f, "SPGIST"),
             Self::BRIN => write!(f, "BRIN"),
             Self::Bloom => write!(f, "BLOOM"),
+            Self::Inverted => write!(f, "INVERTED"),
             Self::Custom(name) => write!(f, "{name}"),
         }
     }
@@ -1459,6 +1462,8 @@ pub enum IndexOption {
     Using(IndexType),
     /// `COMMENT 'string'`: Specifies a comment for the index.
     Comment(String),
+    /// `PROPERTIES ("key" = "value", ...)`: Apache Doris index properties.
+    Properties(Vec<SqlOption>),
 }
 
 impl fmt::Display for IndexOption {
@@ -1466,6 +1471,9 @@ impl fmt::Display for IndexOption {
         match self {
             Self::Using(index_type) => write!(f, "USING {index_type}"),
             Self::Comment(s) => write!(f, "COMMENT '{s}'"),
+            Self::Properties(properties) => {
+                write!(f, "PROPERTIES ({})", display_comma_separated(properties))
+            }
         }
     }
 }

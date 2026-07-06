@@ -74,4 +74,20 @@ impl Dialect for DorisDialect {
     fn supports_create_table_model_clause_without_marker(&self) -> bool {
         true
     }
+
+    fn supports_table_index_options_after_columns(&self) -> bool {
+        true
+    }
+
+    fn supports_table_index_properties_option(&self) -> bool {
+        true
+    }
+
+    fn supports_struct_literal(&self) -> bool {
+        true
+    }
+
+    fn supports_map_literal_with_angle_brackets(&self) -> bool {
+        true
+    }
 }

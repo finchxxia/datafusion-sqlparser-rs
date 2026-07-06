@@ -346,3 +346,106 @@ fn ansi_rejects_doris_key_model() {
         "CREATE TABLE t (k BIGINT, v STRING) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8";
     assert!(ansi.parse_sql_statements(sql).is_err());
 }
+
+#[test]
+fn parse_doris_inline_inverted_index() {
+    doris().verified_stmt(
+        "CREATE TABLE t (k BIGINT, name STRING, INDEX idx_name (name) USING INVERTED) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_inline_inverted_index_with_comment() {
+    doris().verified_stmt(
+        "CREATE TABLE t (k BIGINT, name STRING, INDEX idx_name (name) USING INVERTED COMMENT 'inverted index for name') DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_inline_bitmap_index() {
+    doris().verified_stmt(
+        "CREATE TABLE t (k BIGINT, name STRING, INDEX idx_bm (name) USING BITMAP) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_inline_ngram_bf_index_with_properties() {
+    doris().verified_stmt(
+        r#"CREATE TABLE t (k BIGINT, name STRING, INDEX idx_ngram (name) USING NGRAM_BF PROPERTIES ("gram_size" = "3", "bf_size" = "256") COMMENT 'ngram') DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8"#,
+    );
+}
+
+#[test]
+fn ast_doris_inline_index_is_structured() {
+    let sql = r#"CREATE TABLE t (k BIGINT, name STRING, INDEX idx_ngram (name) USING NGRAM_BF PROPERTIES ("gram_size" = "3") COMMENT 'ngram') DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8"#;
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable { constraints, .. }) => {
+            assert_eq!(constraints.len(), 1);
+            match &constraints[0] {
+                TableConstraint::Index(index) => {
+                    assert!(!index.display_as_key);
+                    assert_eq!(index.name, Some(Ident::new("idx_ngram")));
+                    assert_eq!(index.index_type, None);
+                    assert_eq!(index.columns.len(), 1);
+                    assert_eq!(index.index_options.len(), 3);
+                    assert_eq!(
+                        index.index_options[0],
+                        IndexOption::Using(IndexType::Custom(Ident::new("NGRAM_BF")))
+                    );
+                    match &index.index_options[1] {
+                        IndexOption::Properties(props) => assert_eq!(props.len(), 1),
+                        other => panic!("Expected Properties, got {other:?}"),
+                    }
+                    assert_eq!(
+                        index.index_options[2],
+                        IndexOption::Comment("ngram".to_string())
+                    );
+                }
+                other => panic!("Expected Index constraint, got {other:?}"),
+            }
+        }
+        _ => panic!("Expected CreateTable"),
+    }
+}
+
+#[test]
+fn ast_doris_inline_inverted_index_type_is_structured() {
+    let sql = "CREATE TABLE t (k BIGINT, name STRING, INDEX idx_name (name) USING INVERTED) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable { constraints, .. }) => match &constraints[0] {
+            TableConstraint::Index(index) => {
+                assert_eq!(
+                    index.index_options[0],
+                    IndexOption::Using(IndexType::Inverted)
+                );
+            }
+            other => panic!("Expected Index constraint, got {other:?}"),
+        },
+        _ => panic!("Expected CreateTable"),
+    }
+}
+
+#[test]
+fn parse_doris_array_type() {
+    doris().verified_stmt("CREATE TABLE t (a ARRAY<VARCHAR(255)>)");
+}
+
+#[test]
+fn parse_doris_map_type() {
+    doris().verified_stmt("CREATE TABLE t (m MAP<STRING, INT>)");
+}
+
+#[test]
+fn parse_doris_struct_type() {
+    doris().one_statement_parses_to(
+        "CREATE TABLE t (s STRUCT<x: INT, y: STRING>)",
+        "CREATE TABLE t (s STRUCT<x INT, y STRING>)",
+    );
+}
+
+#[test]
+fn parse_doris_nested_complex_types() {
+    doris().verified_stmt("CREATE TABLE t (a ARRAY<MAP<STRING, INT>>)");
+}

@@ -553,6 +553,7 @@ define_keywords!(
     INTERSECTION,
     INTERVAL,
     INTO,
+    INVERTED,
     INVISIBLE,
     INVOKER,
     IO,

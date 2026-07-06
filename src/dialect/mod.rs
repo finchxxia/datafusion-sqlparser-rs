@@ -1265,6 +1265,19 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports an inline table `INDEX` definition
+    /// whose index type and options follow the column list, for example the
+    /// Apache Doris syntax `INDEX <name> (<cols>) USING INVERTED`.
+    fn supports_table_index_options_after_columns(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect supports a `PROPERTIES (...)` option in an
+    /// inline table index definition, for example Apache Doris.
+    fn supports_table_index_properties_option(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect accepts a comma-separated list of table-level
     /// options placed between the table name and the column-list parenthesis, e.g.
     ///

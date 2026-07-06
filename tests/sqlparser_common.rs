@@ -12808,7 +12808,13 @@ fn test_parse_inline_comment() {
         "CREATE TABLE t0 (id INT COMMENT 'comment without equal') COMMENT = 'comment with equal'";
     // Hive dialect doesn't support `=` in table comment, please refer:
     // [Hive](https://cwiki.apache.org/confluence/display/Hive/LanguageManual+DDL#LanguageManualDDL-CreateTable)
-    match all_dialects_except(|d| d.is::<HiveDialect>()).verified_stmt(sql) {
+    // Dialects with unmarked table model clauses may store table-level comments
+    // in their dialect-specific table model instead of plain table options.
+    match all_dialects_except(|d| {
+        d.is::<HiveDialect>() || d.supports_create_table_model_clause_without_marker()
+    })
+    .verified_stmt(sql)
+    {
         Statement::CreateTable(CreateTable {
             columns,
             table_options,

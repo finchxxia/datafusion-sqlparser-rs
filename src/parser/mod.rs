@@ -10362,6 +10362,29 @@ impl<'a> Parser<'a> {
                 ))
             }
             Token::Word(w)
+                if w.keyword == Keyword::INDEX
+                    && self.dialect.supports_table_index_options_after_columns()
+                    && name.is_none() =>
+            {
+                // Apache Doris inline index:
+                // `INDEX <name> (<cols>) [USING <type>] [PROPERTIES (...)] [COMMENT '...']`
+                // The `USING <type>` clause appears after the column list, unlike MySQL.
+                let name = self.parse_optional_ident()?;
+                let columns = self.parse_parenthesized_index_column_list()?;
+                let index_options = self.parse_index_options()?;
+
+                Ok(Some(
+                    IndexConstraint {
+                        display_as_key: false,
+                        name,
+                        index_type: None,
+                        columns,
+                        index_options,
+                    }
+                    .into(),
+                ))
+            }
+            Token::Word(w)
                 if (w.keyword == Keyword::INDEX || w.keyword == Keyword::KEY)
                     && dialect_of!(self is GenericDialect | MySqlDialect)
                     && name.is_none() =>
@@ -10501,6 +10524,8 @@ impl<'a> Parser<'a> {
             IndexType::BRIN
         } else if self.parse_keyword(Keyword::BLOOM) {
             IndexType::Bloom
+        } else if self.parse_keyword(Keyword::INVERTED) {
+            IndexType::Inverted
         } else {
             IndexType::Custom(self.parse_identifier()?)
         })
@@ -10548,6 +10573,11 @@ impl<'a> Parser<'a> {
         } else if self.parse_keyword(Keyword::COMMENT) {
             let s = self.parse_literal_string()?;
             Ok(Some(IndexOption::Comment(s)))
+        } else if self.dialect.supports_table_index_properties_option()
+            && self.peek_keyword(Keyword::PROPERTIES)
+        {
+            let properties = self.parse_options(Keyword::PROPERTIES)?;
+            Ok(Some(IndexOption::Properties(properties)))
         } else {
             Ok(None)
         }
