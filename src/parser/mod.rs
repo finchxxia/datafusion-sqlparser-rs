@@ -8814,9 +8814,34 @@ impl<'a> Parser<'a> {
         // SQLite supports `WITHOUT ROWID` at the end of `CREATE TABLE`
         let without_rowid = self.parse_keywords(&[Keyword::WITHOUT, Keyword::ROWID]);
 
-        let hive_distribution = self.parse_hive_distribution()?;
+        let mut hive_distribution = self.parse_hive_distribution()?;
         let clustered_by = self.parse_optional_clustered_by()?;
         let hive_formats = self.parse_hive_formats()?;
+
+        // Databricks: `USING <format> [PARTITIONED BY ...] [CLUSTER BY (...)] [COMMENT '...']`
+        let mut cluster_by = None;
+        let mut comment = comment_after_column_def;
+        let has_using = matches!(
+            &hive_formats,
+            Some(HiveFormat {
+                storage: Some(HiveIOFormat::Using { .. }),
+                ..
+            })
+        );
+        if self.dialect.supports_create_table_cluster_by() && has_using {
+            if matches!(hive_distribution, HiveDistributionStyle::NONE) {
+                hive_distribution = self.parse_hive_distribution()?;
+            }
+            if self.parse_keywords(&[Keyword::CLUSTER, Keyword::BY]) {
+                self.expect_token(&Token::LParen)?;
+                let exprs = self.parse_comma_separated(Parser::parse_expr)?;
+                self.expect_token(&Token::RParen)?;
+                cluster_by = Some(WrappedCollection::Parentheses(exprs));
+            }
+            if comment.is_none() {
+                comment = self.parse_optional_inline_comment()?;
+            }
+        }
 
         let table_model = self.parse_optional_doris_create_table_clauses()?;
 
@@ -8935,13 +8960,13 @@ impl<'a> Parser<'a> {
             .without_rowid(without_rowid)
             .like(like)
             .clone_clause(clone)
-            .comment_after_column_def(comment_after_column_def)
+            .comment_after_column_def(comment)
             .order_by(order_by)
             .on_commit(on_commit)
             .on_cluster(on_cluster)
             .clustered_by(clustered_by)
             .partition_by(partition_by)
-            .cluster_by(create_table_config.cluster_by)
+            .cluster_by(cluster_by.or(create_table_config.cluster_by))
             .table_model(table_model)
             .inherits(create_table_config.inherits)
             .partition_of(partition_of)

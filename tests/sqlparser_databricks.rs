@@ -745,3 +745,16 @@ fn test_databricks_insert_by_name() {
         "INSERT INTO TABLE lakehouse.dwd.dwd_event_quality_sla_metric_di BY NAME WITH day AS (SELECT 1 AS event_data_id) SELECT event_data_id FROM day",
     );
 }
+
+#[test]
+fn parse_create_table_using_cluster_by() {
+    databricks().verified_stmt(
+        "CREATE TABLE t (id INT, dt DATE) USING iceberg CLUSTER BY (dt) TBLPROPERTIES ('format-version' = '2')",
+    );
+    databricks().verified_stmt(
+        "CREATE TABLE t (id STRING, process_date DATE) USING iceberg PARTITIONED BY (process_date)",
+    );
+    databricks().verified_stmt(
+        "CREATE TABLE t (batch_ts TIMESTAMP, event_name STRING) USING iceberg CLUSTER BY (batch_ts, event_name) COMMENT 'c' TBLPROPERTIES ('format-version' = '2')",
+    );
+}

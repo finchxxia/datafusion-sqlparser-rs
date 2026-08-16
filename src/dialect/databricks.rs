@@ -113,4 +113,14 @@ impl Dialect for DatabricksDialect {
     fn supports_select_item_multi_column_alias(&self) -> bool {
         true
     }
+
+    /// See <https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-ddl-create-table-using.html>
+    fn supports_create_table_using(&self) -> bool {
+        true
+    }
+
+    /// See <https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-ddl-create-table-using.html>
+    fn supports_create_table_cluster_by(&self) -> bool {
+        true
+    }
 }

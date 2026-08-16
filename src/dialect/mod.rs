@@ -1904,6 +1904,18 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports `CLUSTER BY` after `CREATE TABLE ... USING`.
+    ///
+    /// Example:
+    /// ```sql
+    /// CREATE TABLE t (id INT, dt DATE) USING iceberg CLUSTER BY (dt)
+    /// ```
+    ///
+    /// [Databricks](https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-ddl-create-table-using.html)
+    fn supports_create_table_cluster_by(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect treats `LONG` as an alias for `BIGINT`.
     ///
     /// Example:

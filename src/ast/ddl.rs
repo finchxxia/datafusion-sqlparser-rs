@@ -3548,10 +3548,21 @@ impl fmt::Display for CreateTable {
             write!(f, " {for_values}")?;
         }
 
+        let has_using = matches!(
+            &self.hive_formats,
+            Some(HiveFormat {
+                storage: Some(HiveIOFormat::Using { .. }),
+                ..
+            })
+        );
+
         // Hive table comment should be after column definitions, please refer to:
         // [Hive](https://cwiki.apache.org/confluence/display/Hive/LanguageManual+DDL#LanguageManualDDL-CreateTable)
-        if let Some(comment) = &self.comment {
-            write!(f, " COMMENT '{comment}'")?;
+        // Databricks `USING` tables print COMMENT after USING / CLUSTER BY / PARTITIONED BY.
+        if !has_using {
+            if let Some(comment) = &self.comment {
+                write!(f, " COMMENT '{comment}'")?;
+            }
         }
 
         if let Some(table_model) = &self.table_model {
@@ -3575,26 +3586,28 @@ impl fmt::Display for CreateTable {
             write!(f, " {version}")?;
         }
 
-        match &self.hive_distribution {
-            HiveDistributionStyle::PARTITIONED { columns } => {
-                write!(f, " PARTITIONED BY ({})", display_comma_separated(columns))?;
-            }
-            HiveDistributionStyle::SKEWED {
-                columns,
-                on,
-                stored_as_directories,
-            } => {
-                write!(
-                    f,
-                    " SKEWED BY ({})) ON ({})",
-                    display_comma_separated(columns),
-                    display_comma_separated(on)
-                )?;
-                if *stored_as_directories {
-                    write!(f, " STORED AS DIRECTORIES")?;
+        if !has_using {
+            match &self.hive_distribution {
+                HiveDistributionStyle::PARTITIONED { columns } => {
+                    write!(f, " PARTITIONED BY ({})", display_comma_separated(columns))?;
                 }
+                HiveDistributionStyle::SKEWED {
+                    columns,
+                    on,
+                    stored_as_directories,
+                } => {
+                    write!(
+                        f,
+                        " SKEWED BY ({})) ON ({})",
+                        display_comma_separated(columns),
+                        display_comma_separated(on)
+                    )?;
+                    if *stored_as_directories {
+                        write!(f, " STORED AS DIRECTORIES")?;
+                    }
+                }
+                _ => (),
             }
-            _ => (),
         }
 
         if let Some(clustered_by) = &self.clustered_by {
@@ -3645,6 +3658,35 @@ impl fmt::Display for CreateTable {
                 }
             }
         }
+        if has_using {
+            match &self.hive_distribution {
+                HiveDistributionStyle::PARTITIONED { columns } => {
+                    write!(f, " PARTITIONED BY ({})", display_comma_separated(columns))?;
+                }
+                HiveDistributionStyle::SKEWED {
+                    columns,
+                    on,
+                    stored_as_directories,
+                } => {
+                    write!(
+                        f,
+                        " SKEWED BY ({})) ON ({})",
+                        display_comma_separated(columns),
+                        display_comma_separated(on)
+                    )?;
+                    if *stored_as_directories {
+                        write!(f, " STORED AS DIRECTORIES")?;
+                    }
+                }
+                _ => (),
+            }
+            if let Some(cluster_by) = self.cluster_by.as_ref() {
+                write!(f, " CLUSTER BY {cluster_by}")?;
+            }
+            if let Some(comment) = &self.comment {
+                write!(f, " COMMENT '{comment}'")?;
+            }
+        }
         if self.external {
             if let Some(file_format) = self.file_format {
                 write!(f, " STORED AS {file_format}")?;
@@ -3673,8 +3715,10 @@ impl fmt::Display for CreateTable {
         if let Some(partition_by) = self.partition_by.as_ref() {
             write!(f, " PARTITION BY {partition_by}")?;
         }
-        if let Some(cluster_by) = self.cluster_by.as_ref() {
-            write!(f, " CLUSTER BY {cluster_by}")?;
+        if !has_using {
+            if let Some(cluster_by) = self.cluster_by.as_ref() {
+                write!(f, " CLUSTER BY {cluster_by}")?;
+            }
         }
         if let Some(with_connection) = &self.with_connection {
             write!(f, " WITH CONNECTION {with_connection}")?;
