@@ -1872,6 +1872,7 @@ fn parse_multi_table_insert(
         table_alias: None,
         columns: vec![],
         by_name: false,
+        replace_where: None,
         overwrite,
         source: Some(source),
         assignments: vec![],

@@ -76,6 +76,15 @@ pub struct Insert {
     ///
     /// See <https://docs.databricks.com/gcp/en/sql/language-manual/sql-ref-syntax-dml-insert-into>.
     pub by_name: bool,
+    /// Databricks/Delta `REPLACE WHERE` predicate.
+    ///
+    /// Example:
+    /// ```sql
+    /// INSERT INTO TABLE t REPLACE WHERE dt = '2026-01-07' SELECT * FROM src
+    /// ```
+    ///
+    /// See <https://docs.databricks.com/gcp/en/sql/language-manual/delta-replace-where>.
+    pub replace_where: Option<Expr>,
     /// Overwrite (Hive)
     pub overwrite: bool,
     /// A SQL query that specifies what to insert
@@ -217,6 +226,11 @@ impl Display for Insert {
 
         if self.by_name {
             write!(f, "BY NAME")?;
+            SpaceOrNewline.fmt(f)?;
+        }
+
+        if let Some(replace_where) = &self.replace_where {
+            write!(f, "REPLACE WHERE {replace_where}")?;
             SpaceOrNewline.fmt(f)?;
         }
 

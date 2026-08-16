@@ -1445,6 +1445,18 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports Databricks `INSERT ... REPLACE WHERE`.
+    ///
+    /// Example:
+    /// ```sql
+    /// INSERT INTO TABLE t REPLACE WHERE dt = '2026-01-07' SELECT * FROM src
+    /// ```
+    ///
+    /// [Databricks](https://docs.databricks.com/gcp/en/sql/language-manual/delta-replace-where)
+    fn supports_insert_replace_where(&self) -> bool {
+        false
+    }
+
     /// Returns true if this dialect supports `SET` statements without an explicit
     /// assignment operator such as `=`. For example: `SET SHOWPLAN_XML ON`.
     fn supports_set_stmt_without_operator(&self) -> bool {

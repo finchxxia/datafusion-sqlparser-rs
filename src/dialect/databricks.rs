@@ -123,4 +123,9 @@ impl Dialect for DatabricksDialect {
     fn supports_create_table_cluster_by(&self) -> bool {
         true
     }
+
+    /// See <https://docs.databricks.com/gcp/en/sql/language-manual/delta-replace-where>
+    fn supports_insert_replace_where(&self) -> bool {
+        true
+    }
 }

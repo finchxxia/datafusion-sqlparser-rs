@@ -758,3 +758,10 @@ fn parse_create_table_using_cluster_by() {
         "CREATE TABLE t (batch_ts TIMESTAMP, event_name STRING) USING iceberg CLUSTER BY (batch_ts, event_name) COMMENT 'c' TBLPROPERTIES ('format-version' = '2')",
     );
 }
+
+#[test]
+fn parse_insert_replace_where() {
+    databricks()
+        .verified_stmt("INSERT INTO TABLE t REPLACE WHERE dt = '2026-01-07' SELECT * FROM src");
+    databricks().verified_stmt("INSERT INTO t REPLACE WHERE dt = '2026-01-07' SELECT * FROM src");
+}

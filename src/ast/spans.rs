@@ -1459,7 +1459,8 @@ impl Spanned for Insert {
             table,
             table_alias,
             columns,
-            by_name: _,   // bool
+            by_name: _, // bool
+            replace_where,
             overwrite: _, // bool
             source,
             partitioned,
@@ -1485,6 +1486,7 @@ impl Spanned for Insert {
                 .chain(core::iter::once(table.span()))
                 .chain(table_alias.iter().map(|k| k.alias.span))
                 .chain(columns.iter().map(|i| i.span()))
+                .chain(replace_where.as_ref().map(|e| e.span()))
                 .chain(source.as_ref().map(|q| q.span()))
                 .chain(assignments.iter().map(|i| i.span()))
                 .chain(partitioned.iter().flat_map(|i| i.iter().map(|k| k.span())))

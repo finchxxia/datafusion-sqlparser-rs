@@ -18964,6 +18964,7 @@ impl<'a> Parser<'a> {
             let is_mysql = dialect_of!(self is MySqlDialect);
 
             let mut by_name = false;
+            let mut replace_where = None;
             let (columns, partitioned, after_columns, output, source, assignments) = if self
                 .parse_keywords(&[Keyword::DEFAULT, Keyword::VALUES])
             {
@@ -18987,6 +18988,12 @@ impl<'a> Parser<'a> {
                 };
 
                 let output = self.maybe_parse_output_clause()?;
+
+                if self.dialect.supports_insert_replace_where()
+                    && self.parse_keywords(&[Keyword::REPLACE, Keyword::WHERE])
+                {
+                    replace_where = Some(self.parse_expr()?);
+                }
 
                 let (source, assignments) = if self.peek_keyword(Keyword::FORMAT)
                     || self.peek_keyword(Keyword::SETTINGS)
@@ -19100,6 +19107,7 @@ impl<'a> Parser<'a> {
                 into,
                 overwrite,
                 by_name,
+                replace_where,
                 partitioned,
                 columns,
                 after_columns,
