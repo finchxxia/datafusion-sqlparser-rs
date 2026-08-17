@@ -380,3 +380,56 @@ fn parse_declare_session_variable() {
         _ => unreachable!(),
     }
 }
+
+#[test]
+fn parse_set_session_variable() {
+    spark().verified_stmt("SET VAR process_start_at = 1");
+    spark().verified_stmt("SET VARIABLE process_start_at = 1");
+    spark().verified_stmt("SET VAR process_start_at = DEFAULT");
+    spark().verified_stmt("SET VARIABLE process_start_at = DEFAULT");
+    spark().verified_stmt("SET VAR process_start_at = (SELECT 1)");
+    spark().verified_stmt(
+        r#"SET VAR process_start_at = (SELECT date_trunc('hour', to_timestamp('${yyyy-MM-dd HH:mm:ss}', 'yyyy-MM-dd HH:mm:ss') - INTERVAL 4 HOUR))"#,
+    );
+
+    match spark().verified_stmt("SET VAR process_start_at = 1") {
+        Statement::Set(Set::SetSessionVariable {
+            keyword,
+            variable,
+            value,
+        }) => {
+            assert_eq!(SessionVariableKeyword::Var, keyword);
+            assert_eq!(
+                ObjectName::from(vec![Ident::new("process_start_at")]),
+                variable
+            );
+            assert_eq!(
+                SetSessionVariableValue::Expr(Expr::Value(number("1").with_empty_span())),
+                value
+            );
+        }
+        _ => unreachable!(),
+    }
+
+    match spark().verified_stmt("SET VARIABLE process_start_at = DEFAULT") {
+        Statement::Set(Set::SetSessionVariable {
+            keyword,
+            variable,
+            value,
+        }) => {
+            assert_eq!(SessionVariableKeyword::Variable, keyword);
+            assert_eq!(
+                ObjectName::from(vec![Ident::new("process_start_at")]),
+                variable
+            );
+            assert_eq!(SetSessionVariableValue::Default, value);
+        }
+        _ => unreachable!(),
+    }
+
+    // Without VAR/VARIABLE this remains a configuration SET.
+    match spark().verified_stmt("SET process_start_at = 1") {
+        Statement::Set(Set::SingleAssignment { .. }) => {}
+        other => panic!("expected config SET, got {other:?}"),
+    }
+}

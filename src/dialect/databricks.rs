@@ -137,4 +137,9 @@ impl Dialect for DatabricksDialect {
     fn supports_declare_session_variables(&self) -> bool {
         true
     }
+
+    /// See <https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-aux-set-variable>
+    fn supports_set_session_variables(&self) -> bool {
+        true
+    }
 }

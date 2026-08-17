@@ -561,6 +561,18 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports session variable assignment:
+    ///
+    /// ```sql
+    /// SET { VAR | VARIABLE } variable_name = { expression | DEFAULT }
+    /// ```
+    ///
+    /// [Spark](https://spark.apache.org/docs/latest/sql-ref-syntax-aux-set-var.html)
+    /// [Databricks](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-aux-set-variable.html)
+    fn supports_set_session_variables(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports `ORDER BY` in `UPDATE` statements.
     ///
     /// ```sql

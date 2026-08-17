@@ -16399,6 +16399,12 @@ impl<'a> Parser<'a> {
             .into());
         }
 
+        if self.dialect.supports_set_session_variables() {
+            if let Some(stmt) = self.maybe_parse_set_session_variable()? {
+                return Ok(stmt);
+            }
+        }
+
         if self.dialect.supports_comma_separated_set_assignments() {
             if scope.is_some() {
                 self.prev_token();
@@ -16464,6 +16470,42 @@ impl<'a> Parser<'a> {
         };
 
         self.expected_ref("equals sign or TO", self.peek_token_ref())
+    }
+
+    /// Parse `SET { VAR | VARIABLE } variable_name = { expression | DEFAULT }`.
+    ///
+    /// [Spark]: https://spark.apache.org/docs/latest/sql-ref-syntax-aux-set-var.html
+    /// [Databricks]: https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-aux-set-variable.html
+    fn maybe_parse_set_session_variable(&mut self) -> Result<Option<Statement>, ParserError> {
+        let keyword = match &self.peek_token_ref().token {
+            Token::Word(w) if w.keyword == Keyword::VAR => SessionVariableKeyword::Var,
+            Token::Word(w) if w.keyword == Keyword::VARIABLE => SessionVariableKeyword::Variable,
+            _ => return Ok(None),
+        };
+
+        match &self.peek_nth_token_ref(1).token {
+            Token::Eq | Token::SemiColon | Token::EOF => return Ok(None),
+            Token::Word(w) if w.keyword == Keyword::TO => return Ok(None),
+            _ => {}
+        }
+
+        self.advance_token();
+        let variable = self.parse_object_name(false)?;
+        self.expect_token(&Token::Eq)?;
+        let value = if self.parse_keyword(Keyword::DEFAULT) {
+            SetSessionVariableValue::Default
+        } else {
+            SetSessionVariableValue::Expr(self.parse_expr()?)
+        };
+
+        Ok(Some(
+            Set::SetSessionVariable {
+                keyword,
+                variable,
+                value,
+            }
+            .into(),
+        ))
     }
 
     /// Parse session parameter assignments after `SET` when no `=` or `TO` is present.

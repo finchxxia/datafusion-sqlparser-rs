@@ -137,6 +137,11 @@ impl Dialect for SparkSqlDialect {
         true
     }
 
+    /// See <https://spark.apache.org/docs/latest/sql-ref-syntax-aux-set-var.html>
+    fn supports_set_session_variables(&self) -> bool {
+        true
+    }
+
     /// Parse the `DIV` keyword as integer division.
     ///
     /// Example: `SELECT 10 DIV 3` returns `3`.

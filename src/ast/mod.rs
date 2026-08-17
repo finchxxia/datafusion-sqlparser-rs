@@ -3013,6 +3013,31 @@ impl fmt::Display for SessionVariableKeyword {
     }
 }
 
+/// Value assigned by `SET { VAR | VARIABLE }`.
+///
+/// [Spark] [Databricks]
+///
+/// [Spark]: https://spark.apache.org/docs/latest/sql-ref-syntax-aux-set-var.html
+/// [Databricks]: https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-aux-set-variable.html
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum SetSessionVariableValue {
+    /// Reset the variable to its declared default (or `NULL`).
+    Default,
+    /// Assign an expression to the variable.
+    Expr(Expr),
+}
+
+impl fmt::Display for SetSessionVariableValue {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            SetSessionVariableValue::Default => write!(f, "DEFAULT"),
+            SetSessionVariableValue::Expr(expr) => write!(f, "{expr}"),
+        }
+    }
+}
+
 /// Represents an expression assignment within a variable `DECLARE` statement.
 ///
 /// Examples:
@@ -3337,6 +3362,22 @@ pub enum Set {
         /// Values assigned to the variable.
         values: Vec<Expr>,
     },
+    /// Spark / Databricks session variable assignment.
+    ///
+    /// ```sql
+    /// SET { VAR | VARIABLE } variable_name = { expression | DEFAULT }
+    /// ```
+    ///
+    /// [Spark](https://spark.apache.org/docs/latest/sql-ref-syntax-aux-set-var.html)
+    /// [Databricks](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-aux-set-variable.html)
+    SetSessionVariable {
+        /// Whether `VAR` or `VARIABLE` was specified.
+        keyword: SessionVariableKeyword,
+        /// Session variable being assigned.
+        variable: ObjectName,
+        /// Assigned expression, or `DEFAULT`.
+        value: SetSessionVariableValue,
+    },
     /// Snowflake-style
     /// SET (a, b, ..) = (1, 2, ..);
     /// `SET (a, b) = (1, 2)` (tuple assignment syntax).
@@ -3507,6 +3548,13 @@ impl Display for Set {
                     variable,
                     display_comma_separated(values)
                 )
+            }
+            Set::SetSessionVariable {
+                keyword,
+                variable,
+                value,
+            } => {
+                write!(f, "SET {keyword} {variable} = {value}")
             }
         }
     }
