@@ -1043,12 +1043,13 @@ pub trait Dialect: Debug + Any {
 
     /// Returns true if datetime unit keywords such as `HOUR` should be parsed as
     /// [`crate::ast::DateTimeField`] when they appear as the first argument of
-    /// functions like `DATE_ADD` / `TIMESTAMPADD`.
+    /// functions like `DATE_ADD` / `TIMESTAMPADD` / `DATEDIFF`.
     ///
     /// Example:
     /// ```sql
     /// SELECT date_add(HOUR, 1, current_timestamp())
     /// SELECT timestampadd(MONTH, 1, ts)
+    /// SELECT datediff(DAY, current_timestamp(), '2026-08-17')
     /// ```
     fn supports_datetime_field_function_args(&self) -> bool {
         false

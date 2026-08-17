@@ -8081,7 +8081,8 @@ pub enum FunctionArgExpr {
     /// A normal expression argument.
     Expr(Expr),
     /// A datetime unit keyword used as a function argument, e.g. `HOUR` in
-    /// `date_add(HOUR, 1, ts)` or `timestampadd(MONTH, 1, ts)`.
+    /// `date_add(HOUR, 1, ts)`, `timestampadd(MONTH, 1, ts)`, or
+    /// `datediff(DAY, ts1, ts2)`.
     DateTimeField(DateTimeField),
     /// Qualified wildcard, e.g. `alias.*` or `schema.table.*`.
     QualifiedWildcard(ObjectName),

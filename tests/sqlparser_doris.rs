@@ -867,4 +867,8 @@ fn parse_doris_date_add_datetime_field_arg() {
         "SELECT date_add(HOUR, 1, current_timestamp()) AS _LOADED_AT",
     );
     doris().verified_stmt("SELECT date_add(CURRENT_TIMESTAMP, INTERVAL 0 HOUR)");
+    doris().one_statement_parses_to(
+        "SELECT datediff(day, current_timestamp(), '2026-08-17')",
+        "SELECT datediff(DAY, current_timestamp(), '2026-08-17')",
+    );
 }

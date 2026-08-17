@@ -19788,6 +19788,44 @@ fn parse_date_add_datetime_field_arg() {
         }
         other => panic!("expected argument list, got {other:?}"),
     }
+
+    let select =
+        dialects.verified_only_select("SELECT datediff(DAY, current_timestamp(), '2026-08-17')");
+    let Expr::Function(func) = expr_from_projection(&select.projection[0]) else {
+        panic!("expected datediff function");
+    };
+    match &func.args {
+        FunctionArguments::List(list) => {
+            assert_eq!(3, list.args.len());
+            assert_eq!(
+                FunctionArg::Unnamed(FunctionArgExpr::DateTimeField(DateTimeField::Day)),
+                list.args[0]
+            );
+        }
+        other => panic!("expected argument list, got {other:?}"),
+    }
+
+    dialects.one_statement_parses_to(
+        "SELECT datediff(day, current_timestamp(), '2026-08-17')",
+        "SELECT datediff(DAY, current_timestamp(), '2026-08-17')",
+    );
+
+    // Two-argument `datediff(end, start)` (Spark) is unchanged: the first
+    // argument is not a datetime unit, so it stays an identifier.
+    let select = dialects.verified_only_select("SELECT datediff(end_ts, start_ts)");
+    let Expr::Function(func) = expr_from_projection(&select.projection[0]) else {
+        panic!("expected datediff function");
+    };
+    match &func.args {
+        FunctionArguments::List(list) => {
+            assert!(matches!(
+                &list.args[0],
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident)))
+                    if ident.value == "end_ts"
+            ));
+        }
+        other => panic!("expected argument list, got {other:?}"),
+    }
 }
 
 #[test]

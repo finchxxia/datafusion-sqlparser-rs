@@ -1794,6 +1794,10 @@ impl<'a> Parser<'a> {
             "adddate",
             "timestampadd",
             "timestamp_add",
+            "datediff",
+            "date_diff",
+            "timestampdiff",
+            "timestamp_diff",
         ];
         NAMES
             .iter()
