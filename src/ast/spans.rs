@@ -2310,10 +2310,12 @@ impl Spanned for FunctionArg {
 /// Missing spans:
 /// - [FunctionArgExpr::Wildcard]
 /// - [FunctionArgExpr::WildcardWithOptions]
+/// - [FunctionArgExpr::DateTimeField]
 impl Spanned for FunctionArgExpr {
     fn span(&self) -> Span {
         match self {
             FunctionArgExpr::Expr(expr) => expr.span(),
+            FunctionArgExpr::DateTimeField(_) => Span::empty(),
             FunctionArgExpr::QualifiedWildcard(object_name) => {
                 union_spans(object_name.0.iter().map(|i| i.span()))
             }

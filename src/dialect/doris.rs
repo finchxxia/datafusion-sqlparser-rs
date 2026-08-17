@@ -91,6 +91,10 @@ impl Dialect for DorisDialect {
         true
     }
 
+    fn supports_datetime_field_function_args(&self) -> bool {
+        true
+    }
+
     fn supports_map_literal_with_angle_brackets(&self) -> bool {
         true
     }

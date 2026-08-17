@@ -104,6 +104,10 @@ impl Dialect for SparkSqlDialect {
         true
     }
 
+    fn supports_datetime_field_function_args(&self) -> bool {
+        true
+    }
+
     fn supports_bang_not_operator(&self) -> bool {
         true
     }

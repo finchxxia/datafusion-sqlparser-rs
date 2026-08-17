@@ -117,6 +117,10 @@ impl Dialect for GenericDialect {
         true
     }
 
+    fn supports_datetime_field_function_args(&self) -> bool {
+        true
+    }
+
     fn supports_create_view_comment_syntax(&self) -> bool {
         true
     }

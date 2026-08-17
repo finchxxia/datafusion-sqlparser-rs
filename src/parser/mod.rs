@@ -1784,6 +1784,22 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Functions whose first argument may be a datetime unit keyword
+    /// (`HOUR`, `MONTH`, ...) when
+    /// [`Dialect::supports_datetime_field_function_args`] is enabled.
+    fn function_accepts_datetime_field_arg(name: &ObjectName) -> bool {
+        const NAMES: &[&str] = &[
+            "date_add",
+            "dateadd",
+            "adddate",
+            "timestampadd",
+            "timestamp_add",
+        ];
+        NAMES
+            .iter()
+            .any(|expected| Self::is_simple_unquoted_object_name(name, expected))
+    }
+
     /// Parse an expression prefix.
     pub fn parse_prefix(&mut self) -> Result<Expr, ParserError> {
         // allow the dialect to override prefix parsing
@@ -2594,7 +2610,7 @@ impl<'a> Parser<'a> {
             });
         }
 
-        let mut args = self.parse_function_argument_list()?;
+        let mut args = self.parse_function_argument_list(&name)?;
         let mut parameters = FunctionArguments::None;
         // ClickHouse aggregations support parametric functions like `HISTOGRAM(0.5, 0.6)(x, y)`
         // which (0.5, 0.6) is a parameter to the function.
@@ -2602,7 +2618,7 @@ impl<'a> Parser<'a> {
             && self.consume_token(&Token::LParen)
         {
             parameters = FunctionArguments::List(args);
-            args = self.parse_function_argument_list()?;
+            args = self.parse_function_argument_list(&name)?;
         }
 
         let within_group = if self.parse_keywords(&[Keyword::WITHIN, Keyword::GROUP]) {
@@ -2681,7 +2697,7 @@ impl<'a> Parser<'a> {
     /// Parse time-related function `name` possibly followed by `(...)` arguments.
     pub fn parse_time_functions(&mut self, name: ObjectName) -> Result<Expr, ParserError> {
         let args = if self.consume_token(&Token::LParen) {
-            FunctionArguments::List(self.parse_function_argument_list()?)
+            FunctionArguments::List(self.parse_function_argument_list(&name)?)
         } else {
             FunctionArguments::None
         };
@@ -19366,6 +19382,19 @@ impl<'a> Parser<'a> {
         ))
     }
 
+    /// Parse a function argument, treating a leading datetime unit keyword
+    /// (e.g. `HOUR`) as [`FunctionArgExpr::DateTimeField`] when it is followed
+    /// by a comma.
+    fn parse_function_args_maybe_datetime_field(&mut self) -> Result<FunctionArg, ParserError> {
+        if self.next_token_is_temporal_unit()
+            && matches!(self.peek_nth_token_ref(1).token, Token::Comma)
+        {
+            let field = self.parse_date_time_field()?;
+            return Ok(FunctionArg::Unnamed(FunctionArgExpr::DateTimeField(field)));
+        }
+        self.parse_function_args()
+    }
+
     /// Wrap an already-parsed expression as a function argument, parsing any
     /// trailing wildcard options (e.g. Snowflake's `HASH(* EXCLUDE(col))`).
     fn function_arg_expr_from_wildcard(
@@ -19480,7 +19509,10 @@ impl<'a> Parser<'a> {
     /// FIRST_VALUE(x ORDER BY 1,2,3);
     /// FIRST_VALUE(x IGNORE NULL);
     /// ```
-    fn parse_function_argument_list(&mut self) -> Result<FunctionArgumentList, ParserError> {
+    fn parse_function_argument_list(
+        &mut self,
+        name: &ObjectName,
+    ) -> Result<FunctionArgumentList, ParserError> {
         let mut clauses = vec![];
 
         // Handle clauses that may exist with an empty argument list
@@ -19504,7 +19536,17 @@ impl<'a> Parser<'a> {
         }
 
         let duplicate_treatment = self.parse_duplicate_treatment()?;
-        let args = self.parse_comma_separated(Parser::parse_function_args)?;
+        let parse_datetime_field_arg = self.dialect.supports_datetime_field_function_args()
+            && Self::function_accepts_datetime_field_arg(name);
+        let mut first_arg = parse_datetime_field_arg;
+        let args = self.parse_comma_separated(|parser| {
+            if first_arg {
+                first_arg = false;
+                parser.parse_function_args_maybe_datetime_field()
+            } else {
+                parser.parse_function_args()
+            }
+        })?;
 
         if self.parse_keyword(Keyword::WHERE) {
             clauses.push(FunctionArgumentClause::Where(self.parse_expr()?));

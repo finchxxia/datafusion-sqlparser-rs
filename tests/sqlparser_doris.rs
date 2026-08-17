@@ -838,3 +838,33 @@ PROPERTIES (
         _ => panic!("Expected Doris CreateTable with table model"),
     }
 }
+
+#[test]
+fn parse_doris_date_add_datetime_field_arg() {
+    let select =
+        doris().verified_only_select("SELECT date_add(HOUR, 1, current_timestamp()) AS _LOADED_AT");
+    match &select.projection[0] {
+        SelectItem::ExprWithAlias { expr, alias } => {
+            assert_eq!(alias.value, "_LOADED_AT");
+            let Expr::Function(func) = expr else {
+                panic!("expected date_add function");
+            };
+            match &func.args {
+                FunctionArguments::List(list) => {
+                    assert_eq!(
+                        FunctionArg::Unnamed(FunctionArgExpr::DateTimeField(DateTimeField::Hour)),
+                        list.args[0]
+                    );
+                }
+                other => panic!("expected argument list, got {other:?}"),
+            }
+        }
+        other => panic!("expected aliased projection, got {other:?}"),
+    }
+
+    doris().one_statement_parses_to(
+        "SELECT date_add (hour, 1, current_timestamp()) AS _LOADED_AT",
+        "SELECT date_add(HOUR, 1, current_timestamp()) AS _LOADED_AT",
+    );
+    doris().verified_stmt("SELECT date_add(CURRENT_TIMESTAMP, INTERVAL 0 HOUR)");
+}

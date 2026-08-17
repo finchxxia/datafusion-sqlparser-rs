@@ -1041,6 +1041,19 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if datetime unit keywords such as `HOUR` should be parsed as
+    /// [`crate::ast::DateTimeField`] when they appear as the first argument of
+    /// functions like `DATE_ADD` / `TIMESTAMPADD`.
+    ///
+    /// Example:
+    /// ```sql
+    /// SELECT date_add(HOUR, 1, current_timestamp())
+    /// SELECT timestampadd(MONTH, 1, ts)
+    /// ```
+    fn supports_datetime_field_function_args(&self) -> bool {
+        false
+    }
+
     /// Returns true if this dialect supports a subquery passed to a function
     /// as the only argument without enclosing parentheses.
     ///

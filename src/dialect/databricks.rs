@@ -75,6 +75,10 @@ impl Dialect for DatabricksDialect {
         true
     }
 
+    fn supports_datetime_field_function_args(&self) -> bool {
+        true
+    }
+
     // See https://docs.databricks.com/en/sql/language-manual/functions/struct.html
     fn supports_struct_literal(&self) -> bool {
         true

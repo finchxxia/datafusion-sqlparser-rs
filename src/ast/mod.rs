@@ -8080,6 +8080,9 @@ impl fmt::Display for AssignmentTarget {
 pub enum FunctionArgExpr {
     /// A normal expression argument.
     Expr(Expr),
+    /// A datetime unit keyword used as a function argument, e.g. `HOUR` in
+    /// `date_add(HOUR, 1, ts)` or `timestampadd(MONTH, 1, ts)`.
+    DateTimeField(DateTimeField),
     /// Qualified wildcard, e.g. `alias.*` or `schema.table.*`.
     QualifiedWildcard(ObjectName),
     /// An unqualified `*` wildcard.
@@ -8104,6 +8107,7 @@ impl fmt::Display for FunctionArgExpr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             FunctionArgExpr::Expr(expr) => write!(f, "{expr}"),
+            FunctionArgExpr::DateTimeField(field) => write!(f, "{field}"),
             FunctionArgExpr::QualifiedWildcard(prefix) => write!(f, "{prefix}.*"),
             FunctionArgExpr::Wildcard => f.write_str("*"),
             FunctionArgExpr::WildcardWithOptions(opts) => write!(f, "*{opts}"),

@@ -19750,3 +19750,104 @@ fn parse_insert_by_name() {
         _ => unreachable!(),
     }
 }
+
+#[test]
+fn parse_date_add_datetime_field_arg() {
+    let dialects = all_dialects_where(|d| d.supports_datetime_field_function_args());
+
+    let select = dialects.verified_only_select("SELECT date_add(HOUR, 1, current_timestamp())");
+    let Expr::Function(func) = expr_from_projection(&select.projection[0]) else {
+        panic!("expected date_add function");
+    };
+    match &func.args {
+        FunctionArguments::List(list) => {
+            assert_eq!(3, list.args.len());
+            assert_eq!(
+                FunctionArg::Unnamed(FunctionArgExpr::DateTimeField(DateTimeField::Hour)),
+                list.args[0]
+            );
+        }
+        other => panic!("expected argument list, got {other:?}"),
+    }
+
+    dialects.one_statement_parses_to(
+        "SELECT date_add(hour, 1, current_timestamp())",
+        "SELECT date_add(HOUR, 1, current_timestamp())",
+    );
+
+    let select = dialects.verified_only_select("SELECT timestampadd(MONTH, 1, ts)");
+    let Expr::Function(func) = expr_from_projection(&select.projection[0]) else {
+        panic!("expected timestampadd function");
+    };
+    match &func.args {
+        FunctionArguments::List(list) => {
+            assert_eq!(
+                FunctionArg::Unnamed(FunctionArgExpr::DateTimeField(DateTimeField::Month)),
+                list.args[0]
+            );
+        }
+        other => panic!("expected argument list, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_date_add_interval_form_is_not_datetime_field_arg() {
+    let dialects = all_dialects_where(|d| d.supports_datetime_field_function_args());
+    let select =
+        dialects.verified_only_select("SELECT date_add(CURRENT_TIMESTAMP, INTERVAL 0 HOUR)");
+    let Expr::Function(func) = expr_from_projection(&select.projection[0]) else {
+        panic!("expected date_add function");
+    };
+    match &func.args {
+        FunctionArguments::List(list) => {
+            assert_eq!(2, list.args.len());
+            assert!(matches!(
+                &list.args[0],
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Function(_)))
+            ));
+            assert!(matches!(
+                &list.args[1],
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Interval(_)))
+            ));
+        }
+        other => panic!("expected argument list, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_unrelated_function_keeps_hour_as_identifier() {
+    let dialects = all_dialects_where(|d| d.supports_datetime_field_function_args());
+    let select = dialects.verified_only_select("SELECT my_func(hour, 1)");
+    let Expr::Function(func) = expr_from_projection(&select.projection[0]) else {
+        panic!("expected my_func function");
+    };
+    match &func.args {
+        FunctionArguments::List(list) => {
+            assert!(matches!(
+                &list.args[0],
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident)))
+                    if ident.value == "hour"
+            ));
+        }
+        other => panic!("expected argument list, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_date_add_unit_as_identifier_when_unsupported() {
+    let dialects = all_dialects_where(|d| !d.supports_datetime_field_function_args());
+    let select = dialects.verified_only_select("SELECT date_add(hour, 1, current_timestamp())");
+    let Expr::Function(func) = expr_from_projection(&select.projection[0]) else {
+        panic!("expected date_add function");
+    };
+    match &func.args {
+        FunctionArguments::List(list) => {
+            assert!(matches!(
+                &list.args[0],
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident)))
+                    if ident.value == "hour"
+            ));
+        }
+        other => panic!("expected argument list, got {other:?}"),
+    }
+}

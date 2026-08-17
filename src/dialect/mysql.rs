@@ -131,6 +131,10 @@ impl Dialect for MySqlDialect {
         true
     }
 
+    fn supports_datetime_field_function_args(&self) -> bool {
+        true
+    }
+
     fn supports_limit_comma(&self) -> bool {
         true
     }

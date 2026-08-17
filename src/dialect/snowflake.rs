@@ -225,6 +225,10 @@ impl Dialect for SnowflakeDialect {
         true
     }
 
+    fn supports_datetime_field_function_args(&self) -> bool {
+        true
+    }
+
     /// See [doc](https://docs.snowflake.com/en/sql-reference/functions/flatten)
     fn supports_subquery_as_function_arg(&self) -> bool {
         true
