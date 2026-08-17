@@ -1157,6 +1157,7 @@ define_keywords!(
     VALUE,
     VALUES,
     VALUE_OF,
+    VAR,
     VARBINARY,
     VARBIT,
     VARCHAR,

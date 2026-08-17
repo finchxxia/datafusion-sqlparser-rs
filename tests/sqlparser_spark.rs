@@ -332,3 +332,51 @@ fn test_substring() {
 fn test_pipe_operator() {
     spark().verified_stmt("SELECT * FROM t |> WHERE x > 1 |> SELECT x AS y |> ORDER BY y");
 }
+
+#[test]
+fn parse_declare_session_variable() {
+    spark().verified_stmt("DECLARE OR REPLACE VARIABLE process_start_at TIMESTAMP");
+    spark().verified_stmt("DECLARE OR REPLACE VAR process_start_at TIMESTAMP");
+    spark().verified_stmt("DECLARE VARIABLE process_start_at TIMESTAMP");
+    spark().verified_stmt("DECLARE VAR process_start_at TIMESTAMP");
+    spark().verified_stmt("DECLARE OR REPLACE process_start_at TIMESTAMP");
+    spark().verified_stmt("DECLARE process_start_at TIMESTAMP");
+    spark().verified_stmt("DECLARE process_start_at TIMESTAMP DEFAULT 1");
+    spark().verified_stmt("DECLARE process_start_at TIMESTAMP = 1");
+    spark().verified_stmt("DECLARE process_start_at DEFAULT 1");
+    spark().verified_stmt("DECLARE process_start_at = 1");
+
+    match spark().verified_stmt("DECLARE OR REPLACE VARIABLE process_start_at TIMESTAMP") {
+        Statement::Declare { mut stmts } => {
+            assert_eq!(1, stmts.len());
+            let stmt = stmts.swap_remove(0);
+            assert!(stmt.or_replace);
+            assert_eq!(
+                Some(SessionVariableKeyword::Variable),
+                stmt.variable_keyword
+            );
+            assert_eq!(vec![Ident::new("process_start_at")], stmt.names);
+            assert_eq!(
+                Some(DataType::Timestamp(None, TimezoneInfo::None)),
+                stmt.data_type
+            );
+            assert!(stmt.assignment.is_none());
+        }
+        _ => unreachable!(),
+    }
+
+    match spark().verified_stmt("DECLARE VAR process_start_at TIMESTAMP = 1") {
+        Statement::Declare { mut stmts } => {
+            let stmt = stmts.swap_remove(0);
+            assert!(!stmt.or_replace);
+            assert_eq!(Some(SessionVariableKeyword::Var), stmt.variable_keyword);
+            assert_eq!(
+                Some(DeclareAssignment::MsSqlAssignment(Box::new(Expr::Value(
+                    number("1").with_empty_span()
+                )))),
+                stmt.assignment
+            );
+        }
+        _ => unreachable!(),
+    }
+}

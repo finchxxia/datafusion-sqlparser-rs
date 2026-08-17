@@ -1471,6 +1471,19 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports session variable declarations:
+    ///
+    /// ```sql
+    /// DECLARE [ OR REPLACE ] [ VAR | VARIABLE ]
+    ///     variable_name [ data_type ] [ { DEFAULT | = } default_expr ]
+    /// ```
+    ///
+    /// [Spark](https://spark.apache.org/docs/latest/sql-ref-syntax-ddl-declare-variable.html)
+    /// [Databricks](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-declare-variable)
+    fn supports_declare_session_variables(&self) -> bool {
+        false
+    }
+
     /// Returns true if this dialect supports `SET` statements without an explicit
     /// assignment operator such as `=`. For example: `SET SHOWPLAN_XML ON`.
     fn supports_set_stmt_without_operator(&self) -> bool {

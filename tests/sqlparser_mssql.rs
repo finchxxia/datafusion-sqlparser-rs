@@ -1433,7 +1433,9 @@ fn parse_mssql_declare() {
                     sensitive: None,
                     scroll: None,
                     hold: None,
-                    for_query: None
+                    for_query: None,
+                    or_replace: false,
+                    variable_keyword: None
                 },
                 Declare {
                     names: vec![Ident {
@@ -1448,7 +1450,9 @@ fn parse_mssql_declare() {
                     sensitive: None,
                     scroll: None,
                     hold: None,
-                    for_query: None
+                    for_query: None,
+                    or_replace: false,
+                    variable_keyword: None
                 },
                 Declare {
                     names: vec![Ident {
@@ -1465,7 +1469,9 @@ fn parse_mssql_declare() {
                     sensitive: None,
                     scroll: None,
                     hold: None,
-                    for_query: None
+                    for_query: None,
+                    or_replace: false,
+                    variable_keyword: None
                 }
             ]
         }],
@@ -1486,7 +1492,9 @@ fn parse_mssql_declare() {
                     sensitive: None,
                     scroll: None,
                     hold: None,
-                    for_query: None
+                    for_query: None,
+                    or_replace: false,
+                    variable_keyword: None
                 }]
             },
             Statement::Set(Set::SingleAssignment {

@@ -2988,6 +2988,31 @@ impl fmt::Display for ThrowStatement {
     }
 }
 
+/// Optional `VAR` / `VARIABLE` keyword in a session variable statement.
+///
+/// [Spark] [Databricks]
+///
+/// [Spark]: https://spark.apache.org/docs/latest/sql-ref-syntax-ddl-declare-variable.html
+/// [Databricks]: https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-declare-variable
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum SessionVariableKeyword {
+    /// `VAR`
+    Var,
+    /// `VARIABLE`
+    Variable,
+}
+
+impl fmt::Display for SessionVariableKeyword {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            SessionVariableKeyword::Var => write!(f, "VAR"),
+            SessionVariableKeyword::Variable => write!(f, "VARIABLE"),
+        }
+    }
+}
+
 /// Represents an expression assignment within a variable `DECLARE` statement.
 ///
 /// Examples:
@@ -3100,17 +3125,20 @@ impl fmt::Display for DeclareType {
 }
 
 /// A `DECLARE` statement.
-/// [PostgreSQL] [Snowflake] [BigQuery]
+/// [PostgreSQL] [Snowflake] [BigQuery] [Spark] [Databricks]
 ///
 /// Examples:
 /// ```sql
 /// DECLARE variable_name := 42
 /// DECLARE liahona CURSOR FOR SELECT * FROM films;
+/// DECLARE OR REPLACE VARIABLE process_start_at TIMESTAMP
 /// ```
 ///
 /// [PostgreSQL]: https://www.postgresql.org/docs/current/sql-declare.html
 /// [Snowflake]: https://docs.snowflake.com/en/sql-reference/snowflake-scripting/declare
 /// [BigQuery]: https://cloud.google.com/bigquery/docs/reference/standard-sql/procedural-language#declare
+/// [Spark]: https://spark.apache.org/docs/latest/sql-ref-syntax-ddl-declare-variable.html
+/// [Databricks]: https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-declare-variable
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
@@ -3125,6 +3153,16 @@ pub struct Declare {
     pub assignment: Option<DeclareAssignment>,
     /// Represents the type of the declared variable.
     pub declare_type: Option<DeclareType>,
+    /// Whether `OR REPLACE` was specified. [Spark] [Databricks]
+    ///
+    /// [Spark]: https://spark.apache.org/docs/latest/sql-ref-syntax-ddl-declare-variable.html
+    /// [Databricks]: https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-declare-variable
+    pub or_replace: bool,
+    /// Optional `VAR` or `VARIABLE` keyword. [Spark] [Databricks]
+    ///
+    /// [Spark]: https://spark.apache.org/docs/latest/sql-ref-syntax-ddl-declare-variable.html
+    /// [Databricks]: https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-declare-variable
+    pub variable_keyword: Option<SessionVariableKeyword>,
     /// Causes the cursor to return data in binary rather than in text format.
     pub binary: Option<bool>,
     /// None = Not specified
@@ -3155,7 +3193,15 @@ impl fmt::Display for Declare {
             scroll,
             hold,
             for_query,
+            or_replace,
+            variable_keyword,
         } = self;
+        if *or_replace {
+            write!(f, "OR REPLACE ")?;
+        }
+        if let Some(variable_keyword) = variable_keyword {
+            write!(f, "{variable_keyword} ")?;
+        }
         write!(f, "{}", display_comma_separated(names))?;
 
         if let Some(true) = binary {

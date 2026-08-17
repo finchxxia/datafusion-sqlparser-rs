@@ -7878,6 +7878,9 @@ impl<'a> Parser<'a> {
         if dialect_of!(self is MsSqlDialect) {
             return self.parse_mssql_declare();
         }
+        if self.dialect.supports_declare_session_variables() {
+            return self.parse_session_variable_declare();
+        }
 
         let name = self.parse_identifier()?;
 
@@ -7930,6 +7933,65 @@ impl<'a> Parser<'a> {
                 scroll,
                 hold,
                 for_query: query,
+                or_replace: false,
+                variable_keyword: None,
+            }],
+        })
+    }
+
+    /// Parse a session variable `DECLARE` statement.
+    ///
+    /// Syntax:
+    /// ```text
+    /// DECLARE [ OR REPLACE ] [ VAR | VARIABLE ]
+    ///     variable_name [ data_type ] [ { DEFAULT | = } default_expr ]
+    /// ```
+    ///
+    /// [Spark]: https://spark.apache.org/docs/latest/sql-ref-syntax-ddl-declare-variable.html
+    /// [Databricks]: https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-declare-variable
+    pub fn parse_session_variable_declare(&mut self) -> Result<Statement, ParserError> {
+        let or_replace = self.parse_keywords(&[Keyword::OR, Keyword::REPLACE]);
+        let variable_keyword = match self.parse_one_of_keywords(&[Keyword::VAR, Keyword::VARIABLE])
+        {
+            Some(Keyword::VAR) => Some(SessionVariableKeyword::Var),
+            Some(Keyword::VARIABLE) => Some(SessionVariableKeyword::Variable),
+            _ => None,
+        };
+        let name = self.parse_identifier()?;
+
+        let data_type = if self.peek_keyword(Keyword::DEFAULT)
+            || matches!(
+                self.peek_token_ref().token,
+                Token::Eq | Token::SemiColon | Token::EOF
+            ) {
+            None
+        } else {
+            Some(self.parse_data_type()?)
+        };
+
+        let assignment = if self.parse_keyword(Keyword::DEFAULT) {
+            Some(DeclareAssignment::Default(Box::new(self.parse_expr()?)))
+        } else if self.consume_token(&Token::Eq) {
+            Some(DeclareAssignment::MsSqlAssignment(Box::new(
+                self.parse_expr()?,
+            )))
+        } else {
+            None
+        };
+
+        Ok(Statement::Declare {
+            stmts: vec![Declare {
+                names: vec![name],
+                data_type,
+                assignment,
+                declare_type: None,
+                binary: None,
+                sensitive: None,
+                scroll: None,
+                hold: None,
+                for_query: None,
+                or_replace,
+                variable_keyword,
             }],
         })
     }
@@ -7973,6 +8035,8 @@ impl<'a> Parser<'a> {
                 scroll: None,
                 hold: None,
                 for_query: None,
+                or_replace: false,
+                variable_keyword: None,
             }],
         })
     }
@@ -8067,6 +8131,8 @@ impl<'a> Parser<'a> {
                 scroll: None,
                 hold: None,
                 for_query,
+                or_replace: false,
+                variable_keyword: None,
             };
 
             stmts.push(stmt);
@@ -8171,6 +8237,8 @@ impl<'a> Parser<'a> {
             scroll: None,
             hold: None,
             for_query,
+            or_replace: false,
+            variable_keyword: None,
         })
     }
 
