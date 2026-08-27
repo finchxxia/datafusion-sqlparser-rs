@@ -433,3 +433,17 @@ fn parse_set_session_variable() {
         other => panic!("expected config SET, got {other:?}"),
     }
 }
+
+#[test]
+fn test_insert_from_read_files_table_function() {
+    spark().one_statement_parses_to(
+        r#"INSERT INTO TABLE lakehouse.tmp.ads_back_user_detail_mtp_di
+SELECT DEVICE_ID AS device_id, DT AS dt
+FROM read_files(
+  's3://udp-infra-tokyo-data-transfer/snowflake/export/di_transfer/106/tmp-ads_back_user_detail_mtp_di/dt=202607301711/',
+  format =>'parquet',
+  mergeSchema =>true
+);"#,
+        "INSERT INTO TABLE lakehouse.tmp.ads_back_user_detail_mtp_di SELECT DEVICE_ID AS device_id, DT AS dt FROM read_files('s3://udp-infra-tokyo-data-transfer/snowflake/export/di_transfer/106/tmp-ads_back_user_detail_mtp_di/dt=202607301711/', format => 'parquet', mergeSchema => true)",
+    );
+}
