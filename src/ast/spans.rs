@@ -36,9 +36,9 @@ use super::{
     CreateTableOptions, Cte, Delete, DoUpdate, ExceptSelectItem, ExcludeConstraintElement,
     ExcludeSelectItem, Expr, ExprWithAlias, Fetch, ForValues, FromTable, Function, FunctionArg,
     FunctionArgExpr, FunctionArgumentClause, FunctionArgumentList, FunctionArguments, GroupByExpr,
-    HavingBound, IfStatement, IlikeSelectItem, IndexColumn, Insert, Interpolate, InterpolateExpr,
-    Join, JoinConstraint, JoinOperator, JsonPath, JsonPathElem, LateralView, LimitClause,
-    MatchRecognizePattern, Measure, Merge, MergeAction, MergeClause, MergeInsertExpr,
+    HavingBound, IfStatement, IlikeSelectItem, IndexColumn, Insert, InsertReplace, Interpolate,
+    InterpolateExpr, Join, JoinConstraint, JoinOperator, JsonPath, JsonPathElem, LateralView,
+    LimitClause, MatchRecognizePattern, Measure, Merge, MergeAction, MergeClause, MergeInsertExpr,
     MergeInsertKind, MergeUpdateExpr, MergeUpdateKind, NamedParenthesizedList,
     NamedWindowDefinition, ObjectName, ObjectNamePart, Offset, OnConflict, OnConflictAction,
     OnInsert, OpenStatement, OrderBy, OrderByExpr, OrderByKind, OutputClause, Parens, Partition,
@@ -1460,7 +1460,7 @@ impl Spanned for Insert {
             table_alias,
             columns,
             by_name: _, // bool
-            replace_where,
+            insert_replace,
             overwrite: _, // bool
             source,
             partitioned,
@@ -1486,7 +1486,7 @@ impl Spanned for Insert {
                 .chain(core::iter::once(table.span()))
                 .chain(table_alias.iter().map(|k| k.alias.span))
                 .chain(columns.iter().map(|i| i.span()))
-                .chain(replace_where.as_ref().map(|e| e.span()))
+                .chain(insert_replace.as_ref().map(|r| r.span()))
                 .chain(source.as_ref().map(|q| q.span()))
                 .chain(assignments.iter().map(|i| i.span()))
                 .chain(partitioned.iter().flat_map(|i| i.iter().map(|k| k.span())))
@@ -1495,6 +1495,19 @@ impl Spanned for Insert {
                 .chain(returning.iter().flat_map(|i| i.iter().map(|k| k.span())))
                 .chain(output.iter().map(|i| i.span())),
         )
+    }
+}
+
+impl Spanned for InsertReplace {
+    fn span(&self) -> Span {
+        match self {
+            InsertReplace::Where(expr) => expr.span(),
+            InsertReplace::Using(columns) => union_spans(columns.iter().map(|i| i.span)),
+            InsertReplace::On { expr, source_alias } => union_spans(
+                core::iter::once(expr.span())
+                    .chain(source_alias.iter().map(|alias| alias.alias.span)),
+            ),
+        }
     }
 }
 

@@ -128,8 +128,8 @@ impl Dialect for DatabricksDialect {
         true
     }
 
-    /// See <https://docs.databricks.com/gcp/en/sql/language-manual/delta-replace-where>
-    fn supports_insert_replace_where(&self) -> bool {
+    /// See <https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-dml-insert-into.html>
+    fn supports_insert_replace(&self) -> bool {
         true
     }
 

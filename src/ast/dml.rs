@@ -32,7 +32,7 @@ use crate::{
 use super::{
     display_comma_separated, helpers::attached_token::AttachedToken, query::InputFormatClause,
     Assignment, Expr, FromTable, Ident, InsertAliases, MysqlInsertPriority, ObjectName, OnInsert,
-    OptimizerHint, OrderByExpr, Query, SelectInto, SelectItem, Setting, SqliteOnConflict,
+    OptimizerHint, OrderByExpr, Query, SelectInto, SelectItem, SetExpr, Setting, SqliteOnConflict,
     TableAliasWithoutColumns, TableFactor, TableObject, TableWithJoins, UpdateTableFromKind,
     Values,
 };
@@ -74,17 +74,12 @@ pub struct Insert {
     ///     query
     /// ```
     ///
-    /// See <https://docs.databricks.com/gcp/en/sql/language-manual/sql-ref-syntax-dml-insert-into>.
+    /// See <https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-dml-insert-into.html>
     pub by_name: bool,
-    /// Databricks/Delta `REPLACE WHERE` predicate.
+    /// Databricks `INSERT ... REPLACE { WHERE | USING | ON }` clause.
     ///
-    /// Example:
-    /// ```sql
-    /// INSERT INTO TABLE t REPLACE WHERE dt = '2026-01-07' SELECT * FROM src
-    /// ```
-    ///
-    /// See <https://docs.databricks.com/gcp/en/sql/language-manual/delta-replace-where>.
-    pub replace_where: Option<Expr>,
+    /// See <https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-dml-insert-into.html>
+    pub insert_replace: Option<InsertReplace>,
     /// Overwrite (Hive)
     pub overwrite: bool,
     /// A SQL query that specifies what to insert
@@ -150,16 +145,64 @@ pub struct Insert {
     pub multi_table_else_clause: Option<Vec<MultiTableInsertIntoClause>>,
 }
 
+/// Databricks `INSERT ... REPLACE { WHERE | USING | ON }` clause.
+///
+/// See <https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-dml-insert-into.html>
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum InsertReplace {
+    /// `REPLACE WHERE predicate`
+    Where(Expr),
+    /// `REPLACE USING (column_name [, ...])`
+    Using(Vec<Ident>),
+    /// `REPLACE ON boolean_expression` with an optional source alias.
+    On {
+        /// Boolean expression used to match target rows against the source query.
+        expr: Expr,
+        /// Optional alias for a parenthesized source query: `(query) [AS] source_alias`.
+        source_alias: Option<TableAliasWithoutColumns>,
+    },
+}
+
+impl Display for InsertReplace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            InsertReplace::Where(expr) => write!(f, "REPLACE WHERE {expr}"),
+            InsertReplace::Using(columns) => {
+                write!(f, "REPLACE USING ({})", display_comma_separated(columns))
+            }
+            InsertReplace::On { expr, .. } => write!(f, "REPLACE ON {expr}"),
+        }
+    }
+}
+
+fn fmt_insert_table_alias(
+    f: &mut fmt::Formatter<'_>,
+    alias: &TableAliasWithoutColumns,
+) -> fmt::Result {
+    if alias.explicit {
+        write!(f, "AS {}", alias.alias)
+    } else {
+        write!(f, "{}", alias.alias)
+    }
+}
+
 impl Display for Insert {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let alias_after_columns = self.insert_replace.is_some() && !self.columns.is_empty();
         // SQLite OR conflict has a special format: INSERT OR ... INTO table_name
         let table_name = if let Some(table_alias) = &self.table_alias {
-            format!(
-                "{table} {as_keyword}{alias}",
-                table = self.table,
-                as_keyword = if table_alias.explicit { "AS " } else { "" },
-                alias = table_alias.alias
-            )
+            if alias_after_columns {
+                self.table.to_string()
+            } else {
+                format!(
+                    "{table} {as_keyword}{alias}",
+                    table = self.table,
+                    as_keyword = if table_alias.explicit { "AS " } else { "" },
+                    alias = table_alias.alias
+                )
+            }
         } else {
             self.table.to_string()
         };
@@ -217,6 +260,13 @@ impl Display for Insert {
             SpaceOrNewline.fmt(f)?;
         }
 
+        if alias_after_columns {
+            if let Some(table_alias) = &self.table_alias {
+                fmt_insert_table_alias(f, table_alias)?;
+                SpaceOrNewline.fmt(f)?;
+            }
+        }
+
         if let Some(ref parts) = self.partitioned {
             if !parts.is_empty() {
                 write!(f, "PARTITION ({})", display_comma_separated(parts))?;
@@ -226,11 +276,6 @@ impl Display for Insert {
 
         if self.by_name {
             write!(f, "BY NAME")?;
-            SpaceOrNewline.fmt(f)?;
-        }
-
-        if let Some(replace_where) = &self.replace_where {
-            write!(f, "REPLACE WHERE {replace_where}")?;
             SpaceOrNewline.fmt(f)?;
         }
 
@@ -268,13 +313,34 @@ impl Display for Insert {
             }
         }
 
+        if let Some(insert_replace) = &self.insert_replace {
+            write!(f, "{insert_replace}")?;
+            SpaceOrNewline.fmt(f)?;
+        }
+
         if let Some(source) = &self.source {
             if !self.multi_table_into_clauses.is_empty()
                 || !self.multi_table_when_clauses.is_empty()
             {
                 SpaceOrNewline.fmt(f)?;
             }
-            source.fmt(f)?;
+            let source_alias = match &self.insert_replace {
+                Some(InsertReplace::On { source_alias, .. }) => source_alias.as_ref(),
+                _ => None,
+            };
+            let wrap_source =
+                source_alias.is_some() && !matches!(source.body.as_ref(), SetExpr::Query(_));
+            if wrap_source {
+                write!(f, "(")?;
+                source.fmt(f)?;
+                write!(f, ")")?;
+            } else {
+                source.fmt(f)?;
+            }
+            if let Some(source_alias) = source_alias {
+                write!(f, " ")?;
+                fmt_insert_table_alias(f, source_alias)?;
+            }
         } else if !self.assignments.is_empty() {
             write!(f, "SET")?;
             indented_list(f, &self.assignments)?;

@@ -17,8 +17,8 @@
 
 use sqlparser::ast::helpers::attached_token::AttachedToken;
 use sqlparser::ast::*;
-use sqlparser::dialect::{DatabricksDialect, GenericDialect};
-use sqlparser::parser::ParserError;
+use sqlparser::dialect::{DatabricksDialect, GenericDialect, SparkSqlDialect};
+use sqlparser::parser::{Parser, ParserError};
 use sqlparser::tokenizer::Span;
 use test_utils::*;
 
@@ -764,6 +764,160 @@ fn parse_insert_replace_where() {
     databricks()
         .verified_stmt("INSERT INTO TABLE t REPLACE WHERE dt = '2026-01-07' SELECT * FROM src");
     databricks().verified_stmt("INSERT INTO t REPLACE WHERE dt = '2026-01-07' SELECT * FROM src");
+
+    match databricks_and_generic().verified_stmt(
+        "INSERT INTO sales REPLACE WHERE tx_date BETWEEN '2022-10-01' AND '2022-10-31' SELECT 1, 2",
+    ) {
+        Statement::Insert(Insert {
+            insert_replace: Some(InsertReplace::Where(_)),
+            by_name: false,
+            columns,
+            ..
+        }) => {
+            assert!(columns.is_empty());
+        }
+        _ => unreachable!(),
+    }
+
+    match databricks_and_generic().verified_stmt(
+        "INSERT INTO sales BY NAME REPLACE WHERE tx_date BETWEEN '2022-10-01' AND '2022-10-31' SELECT 1 AS tx_date",
+    ) {
+        Statement::Insert(Insert {
+            insert_replace: Some(InsertReplace::Where(_)),
+            by_name: true,
+            ..
+        }) => {}
+        _ => unreachable!(),
+    }
+
+    match databricks_and_generic().verified_stmt(
+        "INSERT INTO sales (amount, tx_date) REPLACE WHERE tx_date BETWEEN '2022-10-01' AND '2022-10-31' SELECT 1, 2",
+    ) {
+        Statement::Insert(Insert {
+            insert_replace: Some(InsertReplace::Where(_)),
+            by_name: false,
+            columns,
+            ..
+        }) => {
+            assert_eq!(columns.len(), 2);
+        }
+        _ => unreachable!(),
+    }
+
+    assert!(Parser::parse_sql(
+        &SparkSqlDialect {},
+        "INSERT INTO sales REPLACE WHERE tx_date BETWEEN '2022-10-01' AND '2022-10-31' SELECT 1, 2"
+    )
+    .is_err());
+}
+
+#[test]
+fn parse_insert_replace_using() {
+    match databricks_and_generic().verified_stmt(
+        "INSERT INTO TABLE students REPLACE USING (country) SELECT * FROM new_students",
+    ) {
+        Statement::Insert(Insert {
+            insert_replace: Some(InsertReplace::Using(columns)),
+            has_table_keyword: true,
+            by_name: false,
+            ..
+        }) => {
+            assert_eq!(columns, vec![Ident::new("country")]);
+        }
+        _ => unreachable!(),
+    }
+
+    match databricks_and_generic().verified_stmt(
+        "INSERT INTO TABLE students BY NAME REPLACE USING (country) SELECT * FROM new_students",
+    ) {
+        Statement::Insert(Insert {
+            insert_replace: Some(InsertReplace::Using(columns)),
+            by_name: true,
+            ..
+        }) => {
+            assert_eq!(columns, vec![Ident::new("country")]);
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn parse_insert_replace_on() {
+    match databricks_and_generic().verified_stmt(
+        "INSERT INTO TABLE students AS t REPLACE ON t.name <=> s.name (SELECT * FROM people) AS s",
+    ) {
+        Statement::Insert(Insert {
+            insert_replace:
+                Some(InsertReplace::On {
+                    source_alias: Some(source_alias),
+                    ..
+                }),
+            table_alias: Some(table_alias),
+            by_name: false,
+            has_table_keyword: true,
+            columns,
+            ..
+        }) => {
+            assert!(columns.is_empty());
+            assert!(table_alias.explicit);
+            assert_eq!(table_alias.alias.value, "t");
+            assert!(source_alias.explicit);
+            assert_eq!(source_alias.alias.value, "s");
+        }
+        _ => unreachable!(),
+    }
+
+    match databricks_and_generic().verified_stmt(
+        "INSERT INTO TABLE students AS t BY NAME REPLACE ON t.name <=> s.name SELECT * FROM people",
+    ) {
+        Statement::Insert(Insert {
+            insert_replace:
+                Some(InsertReplace::On {
+                    source_alias: None, ..
+                }),
+            table_alias: Some(table_alias),
+            by_name: true,
+            ..
+        }) => {
+            assert!(table_alias.explicit);
+            assert_eq!(table_alias.alias.value, "t");
+        }
+        _ => unreachable!(),
+    }
+
+    match databricks_and_generic().verified_stmt(
+        "INSERT INTO TABLE students (row_origin, name) AS t REPLACE ON t.name <=> s.name SELECT * FROM people",
+    ) {
+        Statement::Insert(Insert {
+            insert_replace: Some(InsertReplace::On { source_alias: None, .. }),
+            table_alias: Some(table_alias),
+            columns,
+            by_name: false,
+            ..
+        }) => {
+            assert_eq!(columns.len(), 2);
+            assert!(table_alias.explicit);
+            assert_eq!(table_alias.alias.value, "t");
+        }
+        _ => unreachable!(),
+    }
+
+    match databricks_and_generic()
+        .verified_stmt("INSERT INTO students t REPLACE ON t.name = s.name SELECT 1")
+    {
+        Statement::Insert(Insert {
+            insert_replace:
+                Some(InsertReplace::On {
+                    source_alias: None, ..
+                }),
+            table_alias: Some(table_alias),
+            ..
+        }) => {
+            assert!(!table_alias.explicit);
+            assert_eq!(table_alias.alias.value, "t");
+        }
+        _ => unreachable!(),
+    }
 }
 
 #[test]

@@ -19068,7 +19068,7 @@ impl<'a> Parser<'a> {
             let table_object = self.parse_table_object()?;
 
             // `BY NAME` is an INSERT clause, not a table alias.
-            let table_alias = if self.dialect.supports_insert_table_alias()
+            let mut table_alias = if self.dialect.supports_insert_table_alias()
                 && !self.peek_keywords(&[Keyword::BY, Keyword::NAME])
                 && !self.peek_sub_query()
                 && self
@@ -19091,10 +19091,14 @@ impl<'a> Parser<'a> {
                 None
             };
 
+            if table_alias.is_none() {
+                table_alias = self.maybe_parse_insert_replace_target_alias()?;
+            }
+
             let is_mysql = dialect_of!(self is MySqlDialect);
 
             let mut by_name = false;
-            let mut replace_where = None;
+            let mut insert_replace = None;
             let (columns, partitioned, after_columns, output, source, assignments) = if self
                 .parse_keywords(&[Keyword::DEFAULT, Keyword::VALUES])
             {
@@ -19117,13 +19121,13 @@ impl<'a> Parser<'a> {
                     Default::default()
                 };
 
-                let output = self.maybe_parse_output_clause()?;
-
-                if self.dialect.supports_insert_replace_where()
-                    && self.parse_keywords(&[Keyword::REPLACE, Keyword::WHERE])
-                {
-                    replace_where = Some(self.parse_expr()?);
+                if table_alias.is_none() {
+                    table_alias = self.maybe_parse_insert_replace_target_alias()?;
                 }
+
+                insert_replace = self.parse_insert_replace()?;
+
+                let output = self.maybe_parse_output_clause()?;
 
                 let (source, assignments) = if self.peek_keyword(Keyword::FORMAT)
                     || self.peek_keyword(Keyword::SETTINGS)
@@ -19132,7 +19136,11 @@ impl<'a> Parser<'a> {
                 } else if self.dialect.supports_insert_set() && self.parse_keyword(Keyword::SET) {
                     (None, self.parse_comma_separated(Parser::parse_assignment)?)
                 } else {
-                    (Some(self.parse_query()?), vec![])
+                    let source = self.parse_query()?;
+                    if let Some(InsertReplace::On { source_alias, .. }) = &mut insert_replace {
+                        *source_alias = self.maybe_parse_insert_replace_source_alias()?;
+                    }
+                    (Some(source), vec![])
                 };
 
                 (
@@ -19237,7 +19245,7 @@ impl<'a> Parser<'a> {
                 into,
                 overwrite,
                 by_name,
-                replace_where,
+                insert_replace,
                 partitioned,
                 columns,
                 after_columns,
@@ -19336,6 +19344,93 @@ impl<'a> Parser<'a> {
             let partition_cols = Some(self.parse_comma_separated(Parser::parse_expr)?);
             self.expect_token(&Token::RParen)?;
             Ok(partition_cols)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Parse an optional target alias for Databricks `INSERT ... REPLACE ON`.
+    fn maybe_parse_insert_replace_target_alias(
+        &mut self,
+    ) -> Result<Option<TableAliasWithoutColumns>, ParserError> {
+        if !self.dialect.supports_insert_replace() {
+            return Ok(None);
+        }
+        if self.peek_keywords(&[Keyword::BY, Keyword::NAME])
+            || self
+                .peek_one_of_keywords(&[
+                    Keyword::REPLACE,
+                    Keyword::SELECT,
+                    Keyword::VALUES,
+                    Keyword::WITH,
+                    Keyword::TABLE,
+                    Keyword::DEFAULT,
+                    Keyword::PARTITION,
+                    Keyword::FORMAT,
+                    Keyword::SETTINGS,
+                    Keyword::SET,
+                ])
+                .is_some()
+            || self.peek_token_ref().token == Token::LParen
+            || self.peek_subquery_start()
+        {
+            return Ok(None);
+        }
+
+        if self.parse_keyword(Keyword::AS) {
+            return Ok(Some(TableAliasWithoutColumns {
+                explicit: true,
+                alias: self.parse_identifier()?,
+            }));
+        }
+
+        // Implicit alias is only consumed when it is immediately followed by REPLACE.
+        if matches!(&self.peek_token_ref().token, Token::Word(_))
+            && matches!(
+                &self.peek_nth_token_ref(1).token,
+                Token::Word(w) if w.keyword == Keyword::REPLACE
+            )
+        {
+            return Ok(Some(TableAliasWithoutColumns {
+                explicit: false,
+                alias: self.parse_identifier()?,
+            }));
+        }
+
+        Ok(None)
+    }
+
+    /// Parse `REPLACE WHERE`, `REPLACE USING`, or `REPLACE ON`.
+    fn parse_insert_replace(&mut self) -> Result<Option<InsertReplace>, ParserError> {
+        if !self.dialect.supports_insert_replace() || !self.parse_keyword(Keyword::REPLACE) {
+            return Ok(None);
+        }
+
+        if self.parse_keyword(Keyword::WHERE) {
+            Ok(Some(InsertReplace::Where(self.parse_expr()?)))
+        } else if self.parse_keyword(Keyword::USING) {
+            Ok(Some(InsertReplace::Using(
+                self.parse_parenthesized_column_list(Mandatory, false)?,
+            )))
+        } else if self.parse_keyword(Keyword::ON) {
+            Ok(Some(InsertReplace::On {
+                expr: self.parse_expr()?,
+                source_alias: None,
+            }))
+        } else {
+            self.expected("WHERE, USING, or ON", self.peek_token())
+        }
+    }
+
+    /// Parse an optional `AS ident` source alias after a `REPLACE ON` query.
+    fn maybe_parse_insert_replace_source_alias(
+        &mut self,
+    ) -> Result<Option<TableAliasWithoutColumns>, ParserError> {
+        if self.parse_keyword(Keyword::AS) {
+            Ok(Some(TableAliasWithoutColumns {
+                explicit: true,
+                alias: self.parse_identifier()?,
+            }))
         } else {
             Ok(None)
         }
