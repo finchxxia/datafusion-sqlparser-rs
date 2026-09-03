@@ -1947,7 +1947,7 @@ pub enum ColumnOption {
     /// [<constraint_characteristics>]
     /// `).
     ForeignKey(ForeignKeyConstraint),
-    /// `CHECK (<expr>)`
+    /// `CHECK (<expr>) [NO INHERIT] [[NOT] ENFORCED]`
     Check(CheckConstraint),
     /// Dialect-specific options, such as:
     /// - SQLite's `AUTOINCREMENT`
