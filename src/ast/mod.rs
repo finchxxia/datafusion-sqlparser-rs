@@ -84,10 +84,10 @@ pub use self::ddl::{
     Owner, Partition, PartitionBoundValue, ProcedureParam, ReferentialAction, RenameTableNameKind,
     ReplicaIdentity, TableDistribution, TableKeyModel, TableKeyModelKind, TableModel,
     TablePartitioning, TablePartitioningDefinition, TablePartitioningEntry, TablePartitioningKind,
-    TablePartitioningValues, TagsColumnOption, TextSearchObjectType, TriggerObjectKind, Truncate,
-    UserDefinedTypeCompositeAttributeDef, UserDefinedTypeInternalLength,
-    UserDefinedTypeRangeOption, UserDefinedTypeRepresentation, UserDefinedTypeSqlDefinitionOption,
-    UserDefinedTypeStorage, ViewColumnDef, WithData,
+    TablePartitioningValues, TableRollup, TagsColumnOption, TextSearchObjectType,
+    TriggerObjectKind, Truncate, UserDefinedTypeCompositeAttributeDef,
+    UserDefinedTypeInternalLength, UserDefinedTypeRangeOption, UserDefinedTypeRepresentation,
+    UserDefinedTypeSqlDefinitionOption, UserDefinedTypeStorage, ViewColumnDef, WithData,
 };
 pub use self::dml::{
     Delete, Insert, InsertReplace, Merge, MergeAction, MergeClause, MergeClauseKind,
@@ -12270,6 +12270,8 @@ pub struct CreateTableLike {
     pub name: ObjectName,
     /// Optional behavior controlling whether defaults are copied.
     pub defaults: Option<CreateTableLikeDefaults>,
+    /// Doris `WITH ROLLUP [(name, ...)]` clause. `Some(vec![])` means bare `WITH ROLLUP`.
+    pub rollup_names: Option<Vec<Ident>>,
 }
 
 impl fmt::Display for CreateTableLike {
@@ -12277,6 +12279,12 @@ impl fmt::Display for CreateTableLike {
         write!(f, "LIKE {}", self.name)?;
         if let Some(defaults) = &self.defaults {
             write!(f, " {defaults}")?;
+        }
+        if let Some(rollup_names) = &self.rollup_names {
+            f.write_str(" WITH ROLLUP")?;
+            if !rollup_names.is_empty() {
+                write!(f, " ({})", display_comma_separated(rollup_names))?;
+            }
         }
         Ok(())
     }

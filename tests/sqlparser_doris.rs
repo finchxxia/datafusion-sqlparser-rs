@@ -273,7 +273,7 @@ fn ast_doris_key_model_order_by() {
         }) => {
             assert_eq!(km.kind, TableKeyModelKind::Unique);
             assert_eq!(km.columns, vec![Ident::new("k")]);
-            assert_eq!(km.order_by, Some(vec![Ident::new("c")]));
+            assert_eq!(km.order_by, Some(vec![OrderByExpr::from(Ident::new("c"))]));
         }
         _ => panic!("Expected CreateTable with key_model"),
     }
@@ -871,4 +871,209 @@ fn parse_doris_date_add_datetime_field_arg() {
         "SELECT datediff(day, current_timestamp(), '2026-08-17')",
         "SELECT datediff(DAY, current_timestamp(), '2026-08-17')",
     );
+}
+
+#[test]
+fn parse_doris_rollup_clause() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT, v BIGINT) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8 ROLLUP (r1 (k, v), r2 (k) DUPLICATE KEY (k) PROPERTIES ('a' = 'b'))",
+    );
+}
+
+#[test]
+fn ast_doris_rollup_is_structured() {
+    let sql = r#"CREATE TABLE t (k BIGINT, v BIGINT) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8 ROLLUP (r1 (k, v), r2 (k) DUPLICATE KEY (k) PROPERTIES ("a" = "b"))"#;
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            table_model:
+                Some(TableModel {
+                    rollups,
+                    properties,
+                    broker_properties,
+                    ..
+                }),
+            ..
+        }) => {
+            assert_eq!(rollups.len(), 2);
+            assert_eq!(rollups[0].name, Ident::new("r1"));
+            assert_eq!(rollups[0].columns, vec![Ident::new("k"), Ident::new("v")]);
+            assert!(rollups[0].duplicate_keys.is_none());
+            assert!(rollups[0].properties.is_empty());
+            assert_eq!(rollups[1].name, Ident::new("r2"));
+            assert_eq!(rollups[1].columns, vec![Ident::new("k")]);
+            assert_eq!(rollups[1].duplicate_keys, Some(vec![Ident::new("k")]));
+            assert_eq!(rollups[1].properties.len(), 1);
+            assert!(properties.is_empty());
+            assert!(broker_properties.is_empty());
+        }
+        _ => panic!("Expected CreateTable with rollups"),
+    }
+}
+
+#[test]
+fn parse_doris_rollup_only_table_model_marker() {
+    // ROLLUP is an unambiguous table model marker by itself.
+    doris_and_generic().verified_stmt("CREATE TABLE t (k INT, v INT) ROLLUP (r1 (k))");
+}
+
+#[test]
+fn parse_doris_broker_properties() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT) ENGINE = ODBC PROPERTIES ('a' = 'b') BROKER PROPERTIES ('k' = 'v')",
+    );
+}
+
+#[test]
+fn parse_doris_broker_properties_without_properties() {
+    doris_and_generic()
+        .verified_stmt("CREATE TABLE t (k BIGINT) ENGINE = ODBC BROKER PROPERTIES ('k' = 'v')");
+}
+
+#[test]
+fn ast_doris_broker_properties_is_structured() {
+    let sql = "CREATE TABLE t (k BIGINT) ENGINE = ODBC PROPERTIES ('a' = 'b') BROKER PROPERTIES ('k' = 'v')";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            table_model:
+                Some(TableModel {
+                    engine: Some(engine),
+                    properties,
+                    broker_properties,
+                    ..
+                }),
+            ..
+        }) => {
+            assert_eq!(engine, Ident::new("ODBC"));
+            assert_eq!(properties.len(), 1);
+            assert_eq!(broker_properties.len(), 1);
+        }
+        _ => panic!("Expected CreateTable with broker_properties"),
+    }
+}
+
+#[test]
+fn parse_doris_key_model_order_by_sort_items() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT, c BIGINT, d BIGINT) UNIQUE KEY(k) ORDER BY(c DESC NULLS LAST, d) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn ast_doris_key_model_order_by_sort_items() {
+    let sql =
+        "CREATE TABLE t (k BIGINT, c BIGINT, d BIGINT) UNIQUE KEY(k) ORDER BY(c DESC NULLS LAST, d ASC NULLS FIRST) DISTRIBUTED BY HASH(k)";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            table_model:
+                Some(TableModel {
+                    key_model: Some(km),
+                    ..
+                }),
+            ..
+        }) => {
+            let order_by = km.order_by.expect("expected ORDER BY items");
+            assert_eq!(order_by.len(), 2);
+            assert_eq!(order_by[0].expr, Expr::Identifier(Ident::new("c")));
+            assert_eq!(order_by[0].options.sort, Some(OrderBySort::Desc));
+            assert_eq!(order_by[0].options.nulls_first, Some(false));
+            assert_eq!(order_by[1].expr, Expr::Identifier(Ident::new("d")));
+            assert_eq!(order_by[1].options.sort, Some(OrderBySort::Asc));
+            assert_eq!(order_by[1].options.nulls_first, Some(true));
+        }
+        _ => panic!("Expected CreateTable with key_model"),
+    }
+}
+
+#[test]
+fn parse_doris_like_with_rollup() {
+    doris_and_generic().verified_stmt("CREATE TABLE t2 LIKE t1 WITH ROLLUP (r1, r2)");
+}
+
+#[test]
+fn parse_doris_like_with_rollup_bare() {
+    doris_and_generic().verified_stmt("CREATE TABLE t2 LIKE t1 WITH ROLLUP");
+}
+
+#[test]
+fn ast_doris_like_with_rollup_is_structured() {
+    let sql = "CREATE TABLE t2 LIKE t1 WITH ROLLUP (r1, r2)";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            like: Some(CreateTableLikeKind::Plain(like)),
+            ..
+        }) => {
+            assert_eq!(like.name.to_string(), "t1");
+            assert_eq!(
+                like.rollup_names,
+                Some(vec![Ident::new("r1"), Ident::new("r2")])
+            );
+        }
+        _ => panic!("Expected CreateTable with LIKE"),
+    }
+
+    let sql = "CREATE TABLE t2 LIKE t1 WITH ROLLUP";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            like: Some(CreateTableLikeKind::Plain(like)),
+            ..
+        }) => {
+            assert_eq!(like.rollup_names, Some(vec![]));
+        }
+        _ => panic!("Expected CreateTable with LIKE"),
+    }
+}
+
+#[test]
+fn parse_doris_partition_by_without_kind_keyword() {
+    // Doris makes the kind keyword optional; the AST normalizes to RANGE.
+    doris_and_generic().one_statement_parses_to(
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY (dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01')) DISTRIBUTED BY HASH(k) BUCKETS 8",
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01')) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn ast_doris_partition_by_without_kind_is_structured() {
+    let stmt = doris().one_statement_parses_to(
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY (dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01')) DISTRIBUTED BY HASH(k)",
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01')) DISTRIBUTED BY HASH(k)",
+    );
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            table_model:
+                Some(TableModel {
+                    partitioning: Some(dp),
+                    ..
+                }),
+            ..
+        }) => {
+            assert!(!dp.auto);
+            assert_eq!(dp.kind, TablePartitioningKind::Range);
+            assert_eq!(dp.partitions.len(), 1);
+        }
+        _ => panic!("Expected CreateTable with partitioning"),
+    }
+}
+
+#[test]
+fn generic_partition_by_expression_still_parses() {
+    // `PARTITION BY (expr)` without a partition definition list must not be
+    // claimed by the Doris table model path.
+    let generic = TestedDialects::new(vec![Box::new(GenericDialect {})]);
+    match generic.verified_stmt("CREATE TABLE t (a INT) PARTITION BY (a)") {
+        Statement::CreateTable(CreateTable {
+            table_model,
+            partition_by,
+            ..
+        }) => {
+            assert!(table_model.is_none());
+            assert!(partition_by.is_some());
+        }
+        _ => panic!("Expected CreateTable"),
+    }
 }

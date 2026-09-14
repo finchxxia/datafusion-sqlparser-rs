@@ -693,6 +693,7 @@ fn parse_create_table_like_with_defaults() {
                 Some(CreateTableLikeKind::Parenthesized(CreateTableLike {
                     name: ObjectName::from(vec![Ident::new("old".to_string())]),
                     defaults: Some(CreateTableLikeDefaults::Including),
+                    rollup_names: None,
                 }))
             )
         }
@@ -711,6 +712,7 @@ fn parse_create_table_like_with_defaults() {
                 Some(CreateTableLikeKind::Parenthesized(CreateTableLike {
                     name: ObjectName::from(vec![Ident::new("old".to_string())]),
                     defaults: Some(CreateTableLikeDefaults::Excluding),
+                    rollup_names: None,
                 }))
             )
         }

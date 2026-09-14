@@ -47,8 +47,8 @@ use super::{
     ReplaceSelectItem, Select, SelectInto, SelectItem, SetExpr, SqlOption, Statement, Subscript,
     SymbolDefinition, TableAlias, TableAliasColumnDef, TableConstraint, TableDistribution,
     TableFactor, TableKeyModel, TableModel, TableObject, TableOptionsClustered, TablePartitioning,
-    TablePartitioningDefinition, TablePartitioningEntry, TablePartitioningValues, TableWithJoins,
-    Update, UpdateTableFromKind, Use, Values, ViewColumnDef, WhileStatement,
+    TablePartitioningDefinition, TablePartitioningEntry, TablePartitioningValues, TableRollup,
+    TableWithJoins, Update, UpdateTableFromKind, Use, Values, ViewColumnDef, WhileStatement,
     WildcardAdditionalOptions, With, WithFill,
 };
 
@@ -557,7 +557,7 @@ impl Spanned for TableKeyModel {
             self.columns.iter().map(|i| i.span).chain(
                 self.order_by
                     .iter()
-                    .flat_map(|cols| cols.iter().map(|i| i.span)),
+                    .flat_map(|cols| cols.iter().map(|i| i.span())),
             ),
         )
     }
@@ -634,6 +634,21 @@ impl Spanned for TablePartitioning {
     }
 }
 
+impl Spanned for TableRollup {
+    fn span(&self) -> Span {
+        union_spans(
+            core::iter::once(self.name.span)
+                .chain(self.columns.iter().map(|i| i.span))
+                .chain(
+                    self.duplicate_keys
+                        .iter()
+                        .flat_map(|cols| cols.iter().map(|i| i.span)),
+                )
+                .chain(self.properties.iter().map(|i| i.span())),
+        )
+    }
+}
+
 impl Spanned for TableModel {
     fn span(&self) -> Span {
         union_spans(
@@ -643,7 +658,9 @@ impl Spanned for TableModel {
                 .chain(self.key_model.iter().map(|i| i.span()))
                 .chain(self.partitioning.iter().map(|i| i.span()))
                 .chain(self.distribution.iter().map(|i| i.span()))
-                .chain(self.properties.iter().map(|i| i.span())),
+                .chain(self.rollups.iter().map(|i| i.span()))
+                .chain(self.properties.iter().map(|i| i.span()))
+                .chain(self.broker_properties.iter().map(|i| i.span())),
         )
     }
 }

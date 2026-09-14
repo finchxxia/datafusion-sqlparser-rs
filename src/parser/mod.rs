@@ -401,7 +401,9 @@ struct TableModelClauses {
     comment: Option<String>,
     partitioning: Option<TablePartitioning>,
     distribution: Option<TableDistribution>,
+    rollups: Vec<TableRollup>,
     properties: Vec<SqlOption>,
+    broker_properties: Vec<SqlOption>,
 }
 
 impl TableModelClauses {
@@ -411,7 +413,9 @@ impl TableModelClauses {
             && self.comment.is_none()
             && self.partitioning.is_none()
             && self.distribution.is_none()
+            && self.rollups.is_empty()
             && self.properties.is_empty()
+            && self.broker_properties.is_empty()
     }
 
     fn into_table_model(self) -> Option<TableModel> {
@@ -424,7 +428,9 @@ impl TableModelClauses {
                 comment: self.comment,
                 partitioning: self.partitioning,
                 distribution: self.distribution,
+                rollups: self.rollups,
                 properties: self.properties,
+                broker_properties: self.broker_properties,
             })
         }
     }
@@ -9157,6 +9163,7 @@ impl<'a> Parser<'a> {
                 Some(CreateTableLikeKind::Parenthesized(CreateTableLike {
                     name,
                     defaults,
+                    rollup_names: None,
                 }))
             } else {
                 // Rollback the '(' it's probably the columns list
@@ -9165,14 +9172,34 @@ impl<'a> Parser<'a> {
             }
         } else if self.parse_keyword(Keyword::LIKE) || self.parse_keyword(Keyword::ILIKE) {
             let name = self.parse_object_name(allow_unquoted_hyphen)?;
+            let rollup_names = self.parse_optional_doris_like_with_rollup()?;
             Some(CreateTableLikeKind::Plain(CreateTableLike {
                 name,
                 defaults: None,
+                rollup_names,
             }))
         } else {
             None
         };
         Ok(like)
+    }
+
+    /// Parse optional Doris `WITH ROLLUP [(name, ...)]` after
+    /// `CREATE TABLE ... LIKE <table>`.
+    fn parse_optional_doris_like_with_rollup(&mut self) -> Result<Option<Vec<Ident>>, ParserError> {
+        if !self.dialect.supports_create_table_rollup_clause()
+            || !self.parse_keywords(&[Keyword::WITH, Keyword::ROLLUP])
+        {
+            return Ok(None);
+        }
+
+        if self.consume_token(&Token::LParen) {
+            let names = self.parse_comma_separated(Parser::parse_identifier)?;
+            self.expect_token(&Token::RParen)?;
+            Ok(Some(names))
+        } else {
+            Ok(Some(vec![]))
+        }
     }
 
     pub(crate) fn parse_create_table_on_commit(&mut self) -> Result<OnCommit, ParserError> {
@@ -10148,7 +10175,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse Doris-compatible `CREATE TABLE` table model clauses in official order:
-    /// `[ENGINE = ...] [KEY_MODEL] [COMMENT '...'] [PARTITION] [DISTRIBUTION] [PROPERTIES]`
+    /// `[ENGINE = ...] [KEY_MODEL] [COMMENT '...'] [PARTITION] [DISTRIBUTION] [ROLLUP] [PROPERTIES] [BROKER PROPERTIES]`
     ///
     /// Uses save/restore to avoid consuming tokens when no table model
     /// clause is found, so the generic parser can handle MySQL/ClickHouse
@@ -10161,7 +10188,11 @@ impl<'a> Parser<'a> {
                 .dialect
                 .supports_create_table_range_list_partitioning_clause()
             && !self.dialect.supports_create_table_distribution_clause()
+            && !self.dialect.supports_create_table_rollup_clause()
             && !self.dialect.supports_create_table_properties_clause()
+            && !self
+                .dialect
+                .supports_create_table_broker_properties_clause()
             && !self
                 .dialect
                 .supports_create_table_model_clause_without_marker()
@@ -10176,16 +10207,21 @@ impl<'a> Parser<'a> {
         let comment = self.parse_optional_doris_table_comment()?;
         let partitioning = self.parse_optional_doris_partition()?;
         let distribution = self.parse_optional_doris_distribution()?;
+        let rollups = self.parse_optional_doris_rollups()?;
         let properties = self.parse_optional_doris_properties()?;
+        let broker_properties = self.parse_optional_doris_broker_properties()?;
 
-        // Key model, partition, distribution and PROPERTIES (the keyword,
-        // not WITH/OPTIONS) are unambiguous table model markers. GenericDialect
-        // only commits to the table model path for those markers, so
-        // MySQL/ClickHouse-style ENGINE and COMMENT remain plain table options.
+        // Key model, partition, distribution, ROLLUP and PROPERTIES (the
+        // keyword, not WITH/OPTIONS) are unambiguous table model markers.
+        // GenericDialect only commits to the table model path for those
+        // markers, so MySQL/ClickHouse-style ENGINE and COMMENT remain
+        // plain table options.
         let has_unambiguous_marker = key_model.is_some()
             || partitioning.is_some()
             || distribution.is_some()
-            || !properties.is_empty();
+            || !rollups.is_empty()
+            || !properties.is_empty()
+            || !broker_properties.is_empty();
         let has_markerless_model_clause = self
             .dialect
             .supports_create_table_model_clause_without_marker()
@@ -10202,7 +10238,9 @@ impl<'a> Parser<'a> {
             comment,
             partitioning,
             distribution,
+            rollups,
             properties,
+            broker_properties,
         }
         .into_table_model())
     }
@@ -10251,7 +10289,10 @@ impl<'a> Parser<'a> {
         let columns = self.parse_parenthesized_column_list(IsOptional::Mandatory, false)?;
 
         let order_by = if self.parse_keywords(&[Keyword::ORDER, Keyword::BY]) {
-            Some(self.parse_parenthesized_column_list(IsOptional::Mandatory, false)?)
+            self.expect_token(&Token::LParen)?;
+            let sort_items = self.parse_comma_separated(Parser::parse_order_by_expr)?;
+            self.expect_token(&Token::RParen)?;
+            Some(sort_items)
         } else {
             None
         };
@@ -10297,6 +10338,53 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse Doris `ROLLUP (rollupDef, ...)` rollup index definitions.
+    fn parse_optional_doris_rollups(&mut self) -> Result<Vec<TableRollup>, ParserError> {
+        if !self.dialect.supports_create_table_rollup_clause()
+            || !self.parse_keyword(Keyword::ROLLUP)
+        {
+            return Ok(vec![]);
+        }
+
+        self.expect_token(&Token::LParen)?;
+        let rollups = self.parse_comma_separated(Parser::parse_doris_rollup_def)?;
+        self.expect_token(&Token::RParen)?;
+        Ok(rollups)
+    }
+
+    /// Parse one Doris rollup definition:
+    /// `name (cols) [DUPLICATE KEY (cols)] [PROPERTIES (...)]`.
+    fn parse_doris_rollup_def(&mut self) -> Result<TableRollup, ParserError> {
+        let name = self.parse_identifier()?;
+        let columns = self.parse_parenthesized_column_list(IsOptional::Mandatory, false)?;
+        let duplicate_keys = if self.parse_keywords(&[Keyword::DUPLICATE, Keyword::KEY]) {
+            Some(self.parse_parenthesized_column_list(IsOptional::Mandatory, false)?)
+        } else {
+            None
+        };
+        let properties = self.parse_options(Keyword::PROPERTIES)?;
+        Ok(TableRollup {
+            name,
+            columns,
+            duplicate_keys,
+            properties,
+        })
+    }
+
+    /// Parse the legacy Doris `BROKER PROPERTIES (...)` clause used by
+    /// external tables.
+    fn parse_optional_doris_broker_properties(&mut self) -> Result<Vec<SqlOption>, ParserError> {
+        if !self
+            .dialect
+            .supports_create_table_broker_properties_clause()
+            || !self.parse_keyword(Keyword::BROKER)
+        {
+            return Ok(vec![]);
+        }
+
+        self.parse_options(Keyword::PROPERTIES)
+    }
+
     fn parse_optional_doris_partition(&mut self) -> Result<Option<TablePartitioning>, ParserError> {
         if !self
             .dialect
@@ -10318,6 +10406,10 @@ impl<'a> Parser<'a> {
             TablePartitioningKind::Range
         } else if self.parse_keyword(Keyword::LIST) {
             TablePartitioningKind::List
+        } else if self.peek_token().token == Token::LParen {
+            // Doris makes the kind keyword optional: `PARTITION BY (cols)`
+            // defaults to RANGE semantics.
+            TablePartitioningKind::Range
         } else {
             self.index = index;
             return Ok(None);
@@ -10341,8 +10433,10 @@ impl<'a> Parser<'a> {
         // from PostgreSQL `PARTITION BY RANGE(col)`.  Only commit to the
         // Doris path when a recognisable Doris follow-up keyword is next.
         if !auto && partitions.is_empty() {
-            let is_doris_follow_up =
-                self.peek_keyword(Keyword::DISTRIBUTED) || self.peek_keyword(Keyword::PROPERTIES);
+            let is_doris_follow_up = self.peek_keyword(Keyword::DISTRIBUTED)
+                || self.peek_keyword(Keyword::PROPERTIES)
+                || (self.dialect.supports_create_table_rollup_clause()
+                    && self.peek_keyword(Keyword::ROLLUP));
             if !is_doris_follow_up {
                 self.index = index;
                 return Ok(None);
