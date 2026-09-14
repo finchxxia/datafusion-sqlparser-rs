@@ -872,3 +872,124 @@ fn parse_doris_date_add_datetime_field_arg() {
         "SELECT datediff(DAY, current_timestamp(), '2026-08-17')",
     );
 }
+
+#[test]
+fn parse_doris_agg_state_type() {
+    doris_and_generic().verified_stmt("CREATE TABLE t (v AGG_STATE<sum(INT)>)");
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (v AGG_STATE<group_concat(VARCHAR(20), VARCHAR NOT NULL)>)",
+    );
+    doris_and_generic().verified_stmt("CREATE TABLE t (v AGG_STATE<sum(INT NULL)>)");
+    doris_and_generic().verified_stmt("CREATE TABLE t (v AGG_STATE)");
+}
+
+#[test]
+fn ast_doris_agg_state_type_is_structured() {
+    let sql = "CREATE TABLE t (v AGG_STATE<group_concat(VARCHAR(20), VARCHAR NOT NULL)>)";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable { columns, .. }) => {
+            assert_eq!(columns[0].name, Ident::new("v"));
+            match &columns[0].data_type {
+                DataType::AggState {
+                    function,
+                    arg_types,
+                } => {
+                    assert_eq!(function, &Some(Ident::new("group_concat")));
+                    assert_eq!(arg_types.len(), 2);
+                    assert_eq!(arg_types[0].data_type.to_string(), "VARCHAR(20)");
+                    assert_eq!(arg_types[0].nullable, None);
+                    assert_eq!(arg_types[1].data_type.to_string(), "VARCHAR");
+                    assert_eq!(arg_types[1].nullable, Some(false));
+                }
+                other => panic!("Expected AggState, got {other:?}"),
+            }
+        }
+        _ => panic!("Expected CreateTable"),
+    }
+}
+
+#[test]
+fn ast_doris_bare_agg_state_type() {
+    let sql = "CREATE TABLE t (v AGG_STATE)";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable { columns, .. }) => {
+            match &columns[0].data_type {
+                DataType::AggState {
+                    function,
+                    arg_types,
+                } => {
+                    assert!(function.is_none());
+                    assert!(arg_types.is_empty());
+                }
+                other => panic!("Expected AggState, got {other:?}"),
+            }
+        }
+        _ => panic!("Expected CreateTable"),
+    }
+}
+
+#[test]
+fn parse_doris_variant_type() {
+    doris_and_generic().verified_stmt("CREATE TABLE t (v VARIANT)");
+    doris_and_generic().verified_stmt("CREATE TABLE t (v VARIANT<'a': INT, 'b': STRING>)");
+    doris_and_generic().verified_stmt("CREATE TABLE t (v VARIANT<MATCH_NAME 'x': INT>)");
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (v VARIANT<'a': INT COMMENT 'column a'>)",
+    );
+    // MAP<...> angle-bracket syntax and double-quoted strings differ
+    // between the doris and generic dialects.
+    doris().verified_stmt(
+        r#"CREATE TABLE t (v VARIANT<MATCH_NAME_GLOB 'x': MAP<STRING, INT>, PROPERTIES ("k" = "v")>)"#,
+    );
+    doris().verified_stmt(r#"CREATE TABLE t (v VARIANT<PROPERTIES ("k" = "v")>)"#);
+    doris_and_generic()
+        .verified_stmt("CREATE TABLE t (v VARIANT<PROPERTIES ('k' = 'v')>)");
+}
+
+#[test]
+fn ast_doris_variant_type_is_structured() {
+    let sql = r#"CREATE TABLE t (v VARIANT<MATCH_NAME_GLOB 'x': MAP<STRING, INT>, PROPERTIES ("k" = "v")>)"#;
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable { columns, .. }) => {
+            assert_eq!(columns[0].name, Ident::new("v"));
+            match &columns[0].data_type {
+                DataType::Variant { fields, properties } => {
+                    assert_eq!(fields.len(), 1);
+                    assert_eq!(
+                        fields[0].match_type,
+                        Some(VariantSubFieldMatchType::MatchNameGlob)
+                    );
+                    assert_eq!(fields[0].name, "x");
+                    assert_eq!(fields[0].data_type.to_string(), "MAP<STRING, INT>");
+                    assert!(fields[0].comment.is_none());
+                    assert_eq!(properties.len(), 1);
+                }
+                other => panic!("Expected Variant, got {other:?}"),
+            }
+        }
+        _ => panic!("Expected CreateTable"),
+    }
+}
+
+#[test]
+fn parse_doris_nested_parameterized_types() {
+    doris_and_generic().verified_stmt("CREATE TABLE t (a ARRAY<AGG_STATE<sum(INT)>>)");
+    doris_and_generic().verified_stmt("CREATE TABLE t (v VARIANT<'a': ARRAY<INT>>)");
+}
+
+#[test]
+fn ansi_rejects_doris_parameterized_data_types() {
+    let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
+    assert!(ansi
+        .parse_sql_statements("CREATE TABLE t (v AGG_STATE<sum(INT)>)")
+        .is_err());
+    assert!(ansi
+        .parse_sql_statements("CREATE TABLE t (v VARIANT<'a': INT>)")
+        .is_err());
+    // The bare names still parse as custom type names.
+    ansi.verified_stmt("CREATE TABLE t (v AGG_STATE)");
+    ansi.verified_stmt("CREATE TABLE t (v VARIANT)");
+}

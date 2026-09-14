@@ -3909,6 +3909,63 @@ impl<'a> Parser<'a> {
         Ok(trailing_bracket)
     }
 
+    /// Parse a single `AGG_STATE<fn(...)>` argument, i.e.
+    /// `data_type [NOT NULL | NULL]`. See [Doris].
+    ///
+    /// [Doris]: https://doris.apache.org/docs/sql-manual/basic-element/sql-data-types/aggregate/AGG_STATE
+    fn parse_agg_state_argument(&mut self) -> Result<AggStateArgument, ParserError> {
+        let data_type = self.parse_data_type()?;
+        let nullable = if self.parse_keywords(&[Keyword::NOT, Keyword::NULL]) {
+            Some(false)
+        } else if self.parse_keyword(Keyword::NULL) {
+            Some(true)
+        } else {
+            None
+        };
+        Ok(AggStateArgument {
+            data_type,
+            nullable,
+        })
+    }
+
+    /// Parse a `VARIANT<...>` typed subfield, i.e.
+    /// `[MATCH_NAME | MATCH_NAME_GLOB] 'name' : data_type [COMMENT 'c']`. See [Doris].
+    ///
+    /// [Doris]: https://doris.apache.org/docs/sql-manual/basic-element/sql-data-types/semi-structured/VARIANT
+    fn parse_variant_sub_field(
+        &mut self,
+    ) -> Result<(VariantSubField, MatchedTrailingBracket), ParserError> {
+        let match_type = if self.parse_keyword(Keyword::MATCH_NAME_GLOB) {
+            Some(VariantSubFieldMatchType::MatchNameGlob)
+        } else if self.parse_keyword(Keyword::MATCH_NAME) {
+            Some(VariantSubFieldMatchType::MatchName)
+        } else {
+            None
+        };
+        let next_token = self.next_token();
+        let name = match next_token.token {
+            Token::SingleQuotedString(name) => name,
+            _ => return self.expected("a single-quoted variant field name", next_token),
+        };
+        self.expect_token(&Token::Colon)?;
+        let (data_type, trailing_bracket) = self.parse_data_type_helper()?;
+        // A trailing `>>` already closed the VARIANT type, so no comment follows.
+        let comment = if !trailing_bracket.0 && self.parse_keyword(Keyword::COMMENT) {
+            Some(self.parse_literal_string()?)
+        } else {
+            None
+        };
+        Ok((
+            VariantSubField {
+                match_type,
+                name,
+                data_type,
+                comment,
+            },
+            trailing_bracket,
+        ))
+    }
+
     /// Parse an operator following an expression
     pub fn parse_infix(&mut self, expr: Expr, precedence: u8) -> Result<Expr, ParserError> {
         // allow the dialect to override infix parsing
@@ -13759,6 +13816,57 @@ impl<'a> Parser<'a> {
                         Box::new(value_data_type),
                         MapBracketKind::Parentheses,
                     ))
+                }
+                Keyword::AGG_STATE if dialect.supports_agg_state_type() => {
+                    // Doris: `AGG_STATE` or `AGG_STATE<fn(arg_type [NOT NULL | NULL], ...)>`
+                    if self.consume_token(&Token::Lt) {
+                        let function = self.parse_identifier()?;
+                        self.expect_token(&Token::LParen)?;
+                        let arg_types =
+                            self.parse_comma_separated(Parser::parse_agg_state_argument)?;
+                        self.expect_token(&Token::RParen)?;
+                        trailing_bracket =
+                            self.expect_closing_angle_bracket(false.into())?;
+                        Ok(DataType::AggState {
+                            function: Some(function),
+                            arg_types,
+                        })
+                    } else {
+                        Ok(DataType::AggState {
+                            function: None,
+                            arg_types: vec![],
+                        })
+                    }
+                }
+                Keyword::VARIANT if dialect.supports_variant_typed_fields() => {
+                    // Doris: `VARIANT`, `VARIANT<'a': INT, ...>`,
+                    // `VARIANT<PROPERTIES (...)>`, or a mix of both lists.
+                    if self.consume_token(&Token::Lt) {
+                        let mut fields = vec![];
+                        let mut properties = vec![];
+                        let inner_trailing_bracket = loop {
+                            // The properties clause may only appear as the last item.
+                            if self.peek_keyword(Keyword::PROPERTIES) {
+                                properties = self.parse_options(Keyword::PROPERTIES)?;
+                                break false.into();
+                            }
+                            let (field, field_trailing_bracket) =
+                                self.parse_variant_sub_field()?;
+                            fields.push(field);
+                            if field_trailing_bracket.0 || !self.consume_token(&Token::Comma)
+                            {
+                                break field_trailing_bracket;
+                            }
+                        };
+                        trailing_bracket =
+                            self.expect_closing_angle_bracket(inner_trailing_bracket)?;
+                        Ok(DataType::Variant { fields, properties })
+                    } else {
+                        Ok(DataType::Variant {
+                            fields: vec![],
+                            properties: vec![],
+                        })
+                    }
                 }
                 Keyword::NESTED if dialect_is!(dialect is ClickHouseDialect | GenericDialect) => {
                     self.expect_token(&Token::LParen)?;

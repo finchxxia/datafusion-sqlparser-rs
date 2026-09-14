@@ -25,7 +25,9 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "visitor")]
 use sqlparser_derive::{Visit, VisitMut};
 
-use crate::ast::{display_comma_separated, Expr, ObjectName, StructField, UnionField};
+use crate::ast::{
+    display_comma_separated, Expr, Ident, ObjectName, SqlOption, StructField, UnionField,
+};
 
 use super::{value::escape_single_quote_string, ColumnDef};
 
@@ -497,6 +499,26 @@ pub enum DataType {
     ///
     /// [PostgreSQL]: https://www.postgresql.org/docs/17/datatype-textsearch.html
     TsQuery,
+    /// `AGG_STATE<fn(arg_types)>` — Apache Doris aggregation-state type.
+    /// Bare `AGG_STATE` is represented with `function: None`.
+    ///
+    /// [Doris](https://doris.apache.org/docs/sql-manual/basic-element/sql-data-types/aggregate/AGG_STATE)
+    AggState {
+        /// The aggregate function name.
+        function: Option<Ident>,
+        /// The aggregate function argument types.
+        arg_types: Vec<AggStateArgument>,
+    },
+    /// `VARIANT<'path': type, ...>` typed-fields form — Apache Doris.
+    /// Bare `VARIANT` is represented with empty `fields` and `properties`.
+    ///
+    /// [Doris](https://doris.apache.org/docs/sql-manual/basic-element/sql-data-types/semi-structured/VARIANT)
+    Variant {
+        /// The typed subfields.
+        fields: Vec<VariantSubField>,
+        /// The `PROPERTIES (...)` clause options.
+        properties: Vec<SqlOption>,
+    },
 }
 
 impl fmt::Display for DataType {
@@ -819,6 +841,38 @@ impl fmt::Display for DataType {
             DataType::GeometricType(kind) => write!(f, "{kind}"),
             DataType::TsVector => write!(f, "TSVECTOR"),
             DataType::TsQuery => write!(f, "TSQUERY"),
+            DataType::AggState {
+                function,
+                arg_types,
+            } => {
+                if let Some(function) = function {
+                    write!(
+                        f,
+                        "AGG_STATE<{function}({})>",
+                        display_comma_separated(arg_types)
+                    )
+                } else {
+                    write!(f, "AGG_STATE")
+                }
+            }
+            DataType::Variant { fields, properties } => {
+                if fields.is_empty() && properties.is_empty() {
+                    write!(f, "VARIANT")
+                } else {
+                    write!(f, "VARIANT<{}", display_comma_separated(fields))?;
+                    if !properties.is_empty() {
+                        if !fields.is_empty() {
+                            write!(f, ", ")?;
+                        }
+                        write!(
+                            f,
+                            "PROPERTIES ({})",
+                            display_comma_separated(properties)
+                        )?;
+                    }
+                    write!(f, ">")
+                }
+            }
         }
     }
 }
@@ -1203,6 +1257,88 @@ impl fmt::Display for GeometricTypeKind {
             GeometricTypeKind::GeometricPath => write!(f, "path"),
             GeometricTypeKind::Polygon => write!(f, "polygon"),
             GeometricTypeKind::Circle => write!(f, "circle"),
+        }
+    }
+}
+
+/// An argument type inside `AGG_STATE<fn(...)>`, see [Doris].
+///
+/// [Doris]: https://doris.apache.org/docs/sql-manual/basic-element/sql-data-types/aggregate/AGG_STATE
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub struct AggStateArgument {
+    /// The argument data type.
+    pub data_type: DataType,
+    /// `Some(true)` = NULL, `Some(false)` = NOT NULL, `None` = unspecified.
+    pub nullable: Option<bool>,
+}
+
+impl fmt::Display for AggStateArgument {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.data_type)?;
+        match self.nullable {
+            Some(true) => write!(f, " NULL"),
+            Some(false) => write!(f, " NOT NULL"),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A typed subfield inside `VARIANT<...>`, e.g. `MATCH_NAME_GLOB 'a': INT COMMENT 'c'`.
+/// See [Doris].
+///
+/// [Doris]: https://doris.apache.org/docs/sql-manual/basic-element/sql-data-types/semi-structured/VARIANT
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub struct VariantSubField {
+    /// Optional field-name matching mode.
+    pub match_type: Option<VariantSubFieldMatchType>,
+    /// The field name (a string literal).
+    pub name: String,
+    /// The field data type.
+    pub data_type: DataType,
+    /// Optional `COMMENT '...'`.
+    pub comment: Option<String>,
+}
+
+impl fmt::Display for VariantSubField {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        if let Some(match_type) = &self.match_type {
+            write!(f, "{match_type} ")?;
+        }
+        write!(
+            f,
+            "'{}': {}",
+            escape_single_quote_string(&self.name),
+            self.data_type
+        )?;
+        if let Some(comment) = &self.comment {
+            write!(f, " COMMENT '{}'", escape_single_quote_string(comment))?;
+        }
+        Ok(())
+    }
+}
+
+/// Field-name matching mode of a [`VariantSubField`], see [Doris].
+///
+/// [Doris]: https://doris.apache.org/docs/sql-manual/basic-element/sql-data-types/semi-structured/VARIANT
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum VariantSubFieldMatchType {
+    /// `MATCH_NAME`
+    MatchName,
+    /// `MATCH_NAME_GLOB`
+    MatchNameGlob,
+}
+
+impl fmt::Display for VariantSubFieldMatchType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            VariantSubFieldMatchType::MatchName => write!(f, "MATCH_NAME"),
+            VariantSubFieldMatchType::MatchNameGlob => write!(f, "MATCH_NAME_GLOB"),
         }
     }
 }
