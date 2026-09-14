@@ -9936,7 +9936,7 @@ impl<'a> Parser<'a> {
                 self.parse_options(Keyword::OPTIONS)?,
             )))
         } else if self.parse_keyword(Keyword::AS)
-            && dialect_of!(self is MySqlDialect | SQLiteDialect | DuckDbDialect | GenericDialect)
+            && dialect_of!(self is MySqlDialect | SQLiteDialect | DuckDbDialect | GenericDialect | DorisDialect)
         {
             self.parse_optional_column_option_as()
         } else if self.parse_keyword(Keyword::SRID)
@@ -9979,6 +9979,10 @@ impl<'a> Parser<'a> {
             )))
         } else if self.parse_keyword(Keyword::INVISIBLE) {
             Ok(Some(ColumnOption::Invisible))
+        } else if self.dialect.supports_column_key_option()
+            && self.parse_keyword(Keyword::KEY)
+        {
+            Ok(Some(ColumnOption::Key))
         } else {
             self.parse_optional_doris_aggregate_column_option()
         }
@@ -10000,9 +10004,11 @@ impl<'a> Parser<'a> {
                         | Keyword::MAX
                         | Keyword::MIN
                         | Keyword::REPLACE
+                        | Keyword::REPLACE_IF_NOT_NULL
                         | Keyword::HLL_UNION
                         | Keyword::BITMAP_UNION
                         | Keyword::QUANTILE_UNION
+                        | Keyword::GENERIC
                 ) =>
             {
                 word.value

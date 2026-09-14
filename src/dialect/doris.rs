@@ -59,6 +59,10 @@ impl Dialect for DorisDialect {
         true
     }
 
+    fn supports_column_key_option(&self) -> bool {
+        true
+    }
+
     fn supports_create_table_key_model_clause(&self) -> bool {
         true
     }

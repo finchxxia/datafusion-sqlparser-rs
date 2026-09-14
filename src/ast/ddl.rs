@@ -2029,6 +2029,9 @@ pub enum ColumnOption {
     /// the optional parenthesized start value.
     /// Syntax: `AUTO_INCREMENT` or `AUTO_INCREMENT(<start_value>)`.
     AutoIncrement(Option<u64>),
+    /// Apache Doris: marks a key column in a `CREATE TABLE` column definition.
+    /// Syntax: `<name> <type> KEY`.
+    Key,
 }
 
 impl From<UniqueConstraint> for ColumnOption {
@@ -2184,6 +2187,7 @@ impl fmt::Display for ColumnOption {
                     write!(f, "AUTO_INCREMENT")
                 }
             }
+            Key => write!(f, "KEY"),
         }
     }
 }

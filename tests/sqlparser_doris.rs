@@ -872,3 +872,132 @@ fn parse_doris_date_add_datetime_field_arg() {
         "SELECT datediff(DAY, current_timestamp(), '2026-08-17')",
     );
 }
+
+#[test]
+fn doris_column_key_option_gate() {
+    assert!(DorisDialect {}.supports_column_key_option());
+    assert!(!GenericDialect {}.supports_column_key_option());
+    assert!(!AnsiDialect {}.supports_column_key_option());
+}
+
+#[test]
+fn parse_doris_column_key_option() {
+    doris().verified_stmt("CREATE TABLE t (k INT KEY, v INT)");
+    doris().verified_stmt(
+        "CREATE TABLE t (k INT KEY NOT NULL COMMENT 'id', v BIGINT REPLACE_IF_NOT_NULL)",
+    );
+}
+
+#[test]
+fn ast_doris_column_key_option() {
+    let sql = "CREATE TABLE t (k INT KEY, v INT)";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable { columns, .. }) => {
+            let k_col = &columns[0];
+            assert_eq!(k_col.name, Ident::new("k"));
+            let key_opt = k_col
+                .options
+                .iter()
+                .find(|o| matches!(o.option, ColumnOption::Key));
+            assert!(key_opt.is_some());
+            assert!(columns[1]
+                .options
+                .iter()
+                .all(|o| !matches!(o.option, ColumnOption::Key)));
+        }
+        _ => panic!("Expected CreateTable"),
+    }
+}
+
+#[test]
+fn ast_doris_column_key_with_agg_option() {
+    let sql = "CREATE TABLE t (k INT, v INT KEY SUM)";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable { columns, .. }) => {
+            let v_col = &columns[1];
+            assert!(v_col
+                .options
+                .iter()
+                .any(|o| matches!(o.option, ColumnOption::Key)));
+            let agg_opt = v_col
+                .options
+                .iter()
+                .find(|o| matches!(o.option, ColumnOption::DialectSpecific(_)));
+            match &agg_opt.unwrap().option {
+                ColumnOption::DialectSpecific(tokens) => {
+                    assert_eq!(tokens.len(), 1);
+                    assert_eq!(tokens[0], Token::make_keyword("SUM"));
+                }
+                other => panic!("Expected DialectSpecific, got {other:?}"),
+            }
+        }
+        _ => panic!("Expected CreateTable"),
+    }
+}
+
+#[test]
+fn parse_doris_full_agg_type_column_options() {
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k BIGINT, v1 BIGINT REPLACE_IF_NOT_NULL, v2 BIGINT GENERIC)",
+    );
+}
+
+#[test]
+fn ast_doris_replace_if_not_null_and_generic_agg_options() {
+    for (sql, keyword) in [
+        (
+            "CREATE TABLE t (k BIGINT, v BIGINT REPLACE_IF_NOT_NULL)",
+            "REPLACE_IF_NOT_NULL",
+        ),
+        ("CREATE TABLE t (k BIGINT, v BIGINT GENERIC)", "GENERIC"),
+    ] {
+        let stmt = doris().verified_stmt(sql);
+        match stmt {
+            Statement::CreateTable(CreateTable { columns, .. }) => {
+                match &columns[1].options[0].option {
+                    ColumnOption::DialectSpecific(tokens) => {
+                        assert_eq!(tokens.len(), 1);
+                        assert_eq!(tokens[0], Token::make_keyword(keyword));
+                    }
+                    other => panic!("Expected DialectSpecific, got {other:?}"),
+                }
+            }
+            _ => panic!("Expected CreateTable"),
+        }
+    }
+}
+
+#[test]
+fn ast_doris_generated_column_as_expr() {
+    let stmt = doris().one_statement_parses_to(
+        "CREATE TABLE t (k INT, w INT AS (k*2))",
+        "CREATE TABLE t (k INT, w INT AS (k * 2))",
+    );
+    match stmt {
+        Statement::CreateTable(CreateTable { columns, .. }) => {
+            match &columns[1].options[0].option {
+                ColumnOption::Generated {
+                    generation_expr: Some(expr),
+                    generated_keyword: false,
+                    ..
+                } => {
+                    assert_eq!(expr.to_string(), "k * 2");
+                }
+                other => panic!("Expected Generated, got {other:?}"),
+            }
+        }
+        _ => panic!("Expected CreateTable"),
+    }
+
+    doris().verified_stmt("CREATE TABLE t (k INT, w INT GENERATED ALWAYS AS (k * 2))");
+}
+
+#[test]
+fn ansi_rejects_doris_column_key_option() {
+    let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
+    assert!(ansi
+        .parse_sql_statements("CREATE TABLE t (k INT KEY)")
+        .is_err());
+}
