@@ -79,6 +79,14 @@ impl Dialect for DorisDialect {
         true
     }
 
+    fn supports_create_table_bare_column_list(&self) -> bool {
+        true
+    }
+
+    fn supports_column_definition_trailing_commas(&self) -> bool {
+        true
+    }
+
     fn supports_table_index_options_after_columns(&self) -> bool {
         true
     }

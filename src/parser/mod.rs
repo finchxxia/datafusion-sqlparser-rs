@@ -9661,7 +9661,7 @@ impl<'a> Parser<'a> {
         optional_data_type: bool,
     ) -> Result<ColumnDef, ParserError> {
         let col_name = self.parse_identifier()?;
-        let data_type = if self.is_column_type_sqlite_unspecified() {
+        let data_type = if self.is_column_type_unspecified() {
             DataType::Unspecified
         } else if optional_data_type {
             self.maybe_parse(|parser| parser.parse_data_type())?
@@ -9694,7 +9694,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn is_column_type_sqlite_unspecified(&mut self) -> bool {
+    fn is_column_type_unspecified(&mut self) -> bool {
         if dialect_of!(self is SQLiteDialect) {
             match &self.peek_token_ref().token {
                 Token::Word(word) => matches!(
@@ -9712,6 +9712,10 @@ impl<'a> Parser<'a> {
                 ),
                 _ => true, // e.g. comma immediately after column name
             }
+        } else if self.dialect.supports_create_table_bare_column_list() {
+            // A bare column-name list, e.g. Apache Doris
+            // `CREATE TABLE t (a, b) AS SELECT ...`.
+            matches!(self.peek_token_ref().token, Token::Comma | Token::RParen)
         } else {
             false
         }
@@ -10378,16 +10382,19 @@ impl<'a> Parser<'a> {
             };
             let interval_unit = if self.peek_token().token != Token::Comma
                 && self.peek_token().token != Token::RParen
+                && self.peek_token().token != Token::LParen
             {
                 Some(self.parse_identifier()?)
             } else {
                 None
             };
+            let properties = self.parse_doris_partition_properties()?;
             Ok(TablePartitioningEntry::BatchRange {
                 from,
                 to,
                 interval_value,
                 interval_unit,
+                properties,
             })
         } else {
             Ok(TablePartitioningEntry::Definition(
@@ -10402,44 +10409,55 @@ impl<'a> Parser<'a> {
         self.expect_keyword_is(Keyword::PARTITION)?;
         let if_not_exists = self.parse_keywords(&[Keyword::IF, Keyword::NOT, Keyword::EXISTS]);
         let name = self.parse_identifier()?;
-        self.expect_keyword_is(Keyword::VALUES)?;
 
-        let values = if self.parse_keywords(&[Keyword::LESS, Keyword::THAN]) {
-            if self.parse_doris_maxvalue_token() {
-                TablePartitioningValues::LessThanMaxValue
-            } else {
+        // The `VALUES` clause is optional: `PARTITION p (('a'), ('b'))` is an
+        // `IN` list and a bare `PARTITION p` has no values at all.
+        let values = if self.parse_keyword(Keyword::VALUES) {
+            if self.parse_keywords(&[Keyword::LESS, Keyword::THAN]) {
+                if self.parse_doris_maxvalue_token() {
+                    TablePartitioningValues::LessThanMaxValue
+                } else {
+                    self.expect_token(&Token::LParen)?;
+                    let values = self.parse_comma_separated(Parser::parse_expr)?;
+                    self.expect_token(&Token::RParen)?;
+                    Self::normalize_doris_less_than(values)
+                }
+            } else if self.parse_keyword(Keyword::IN) {
                 self.expect_token(&Token::LParen)?;
-                let values = self.parse_comma_separated(Parser::parse_expr)?;
+                let values = self.parse_comma_separated0(
+                    Parser::parse_doris_partition_value_tuple,
+                    Token::RParen,
+                )?;
                 self.expect_token(&Token::RParen)?;
-                Self::normalize_doris_less_than(values)
+                TablePartitioningValues::In(values)
+            } else if self.consume_token(&Token::LBracket) {
+                self.expect_token(&Token::LParen)?;
+                let start = self.parse_comma_separated(Parser::parse_expr)?;
+                self.expect_token(&Token::RParen)?;
+                self.expect_token(&Token::Comma)?;
+                self.expect_token(&Token::LParen)?;
+                let end = self.parse_comma_separated(Parser::parse_expr)?;
+                self.expect_token(&Token::RParen)?;
+                self.expect_token(&Token::RParen)?;
+                TablePartitioningValues::FixedRange { start, end }
+            } else {
+                return self.expected(
+                    "LESS THAN, IN, or [ after PARTITION VALUES",
+                    self.peek_token(),
+                );
             }
-        } else if self.parse_keyword(Keyword::IN) {
-            self.expect_token(&Token::LParen)?;
-            let values = self.parse_comma_separated(Parser::parse_doris_partition_value_tuple)?;
+        } else if self.consume_token(&Token::LParen) {
+            let values = self.parse_comma_separated0(
+                Parser::parse_doris_partition_value_tuple,
+                Token::RParen,
+            )?;
             self.expect_token(&Token::RParen)?;
             TablePartitioningValues::In(values)
-        } else if self.consume_token(&Token::LBracket) {
-            self.expect_token(&Token::LParen)?;
-            let start = self.parse_comma_separated(Parser::parse_expr)?;
-            self.expect_token(&Token::RParen)?;
-            self.expect_token(&Token::Comma)?;
-            self.expect_token(&Token::LParen)?;
-            let end = self.parse_comma_separated(Parser::parse_expr)?;
-            self.expect_token(&Token::RParen)?;
-            self.expect_token(&Token::RParen)?;
-            TablePartitioningValues::FixedRange { start, end }
         } else {
-            return self.expected(
-                "LESS THAN, IN, or [ after PARTITION VALUES",
-                self.peek_token(),
-            );
+            TablePartitioningValues::In(vec![])
         };
 
-        let properties = if self.peek_keyword(Keyword::PROPERTIES) {
-            self.parse_options(Keyword::PROPERTIES)?
-        } else {
-            vec![]
-        };
+        let properties = self.parse_doris_partition_properties()?;
 
         Ok(TablePartitioningDefinition {
             if_not_exists,
@@ -10447,6 +10465,29 @@ impl<'a> Parser<'a> {
             values,
             properties,
         })
+    }
+
+    /// Parse optional per-partition properties: `PROPERTIES (...)` or a bare
+    /// parenthesized `("k" = "v", ...)` list as used by Apache Doris.
+    fn parse_doris_partition_properties(&mut self) -> Result<Vec<SqlOption>, ParserError> {
+        if !self
+            .dialect
+            .supports_create_table_range_list_partitioning_clause()
+        {
+            return Ok(vec![]);
+        }
+
+        if self.peek_keyword(Keyword::PROPERTIES) {
+            return self.parse_options(Keyword::PROPERTIES);
+        }
+
+        if self.consume_token(&Token::LParen) {
+            let properties = self.parse_comma_separated(Parser::parse_sql_option)?;
+            self.expect_token(&Token::RParen)?;
+            return Ok(properties);
+        }
+
+        Ok(vec![])
     }
 
     /// Try to consume `MAXVALUE` or `MAX_VALUE` (the Doris alternative spelling).
@@ -10760,8 +10801,10 @@ impl<'a> Parser<'a> {
                     && name.is_none() =>
             {
                 // Apache Doris inline index:
-                // `INDEX <name> (<cols>) [USING <type>] [PROPERTIES (...)] [COMMENT '...']`
+                // `INDEX [IF NOT EXISTS] <name> (<cols>) [USING <type>] [PROPERTIES (...)] [COMMENT '...']`
                 // The `USING <type>` clause appears after the column list, unlike MySQL.
+                let if_not_exists =
+                    self.parse_keywords(&[Keyword::IF, Keyword::NOT, Keyword::EXISTS]);
                 let name = self.parse_optional_ident()?;
                 let columns = self.parse_parenthesized_index_column_list()?;
                 let index_options = self.parse_index_options()?;
@@ -10769,6 +10812,7 @@ impl<'a> Parser<'a> {
                 Ok(Some(
                     IndexConstraint {
                         display_as_key: false,
+                        if_not_exists,
                         name,
                         index_type: None,
                         columns,
@@ -10796,6 +10840,7 @@ impl<'a> Parser<'a> {
                 Ok(Some(
                     IndexConstraint {
                         display_as_key,
+                        if_not_exists: false,
                         name,
                         index_type,
                         columns,
@@ -22632,6 +22677,7 @@ mod tests {
             "INDEX (c1)",
             IndexConstraint {
                 display_as_key: false,
+                if_not_exists: false,
                 name: None,
                 index_type: None,
                 columns: vec![mk_expected_col("c1")],
@@ -22645,6 +22691,7 @@ mod tests {
             "KEY (c1)",
             IndexConstraint {
                 display_as_key: true,
+                if_not_exists: false,
                 name: None,
                 index_type: None,
                 columns: vec![mk_expected_col("c1")],
@@ -22658,6 +22705,7 @@ mod tests {
             "INDEX 'index' (c1, c2)",
             TableConstraint::Index(IndexConstraint {
                 display_as_key: false,
+                if_not_exists: false,
                 name: Some(Ident::with_quote('\'', "index")),
                 index_type: None,
                 columns: vec![mk_expected_col("c1"), mk_expected_col("c2")],
@@ -22670,6 +22718,7 @@ mod tests {
             "INDEX USING BTREE (c1)",
             IndexConstraint {
                 display_as_key: false,
+                if_not_exists: false,
                 name: None,
                 index_type: Some(IndexType::BTree),
                 columns: vec![mk_expected_col("c1")],
@@ -22683,6 +22732,7 @@ mod tests {
             "INDEX USING HASH (c1)",
             IndexConstraint {
                 display_as_key: false,
+                if_not_exists: false,
                 name: None,
                 index_type: Some(IndexType::Hash),
                 columns: vec![mk_expected_col("c1")],
@@ -22696,6 +22746,7 @@ mod tests {
             "INDEX idx_name USING BTREE (c1)",
             IndexConstraint {
                 display_as_key: false,
+                if_not_exists: false,
                 name: Some(Ident::new("idx_name")),
                 index_type: Some(IndexType::BTree),
                 columns: vec![mk_expected_col("c1")],
@@ -22709,6 +22760,7 @@ mod tests {
             "INDEX idx_name USING HASH (c1)",
             IndexConstraint {
                 display_as_key: false,
+                if_not_exists: false,
                 name: Some(Ident::new("idx_name")),
                 index_type: Some(IndexType::Hash),
                 columns: vec![mk_expected_col("c1")],
