@@ -1997,6 +1997,31 @@ pub trait Dialect: Debug + Any {
     fn supports_map_literal_with_angle_brackets(&self) -> bool {
         false
     }
+
+    /// Returns true if the dialect supports the `AGG_STATE<fn(arg_types)>` data type.
+    ///
+    /// Example:
+    /// ```sql
+    /// CREATE TABLE t (v AGG_STATE<sum(INT)>)
+    /// ```
+    ///
+    /// [Doris](https://doris.apache.org/docs/sql-manual/basic-element/sql-data-types/aggregate/AGG_STATE)
+    fn supports_agg_state_type(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect supports `VARIANT<...>` typed subfields,
+    /// e.g. `VARIANT<'a': INT, PROPERTIES ("k" = "v")>`.
+    ///
+    /// Example:
+    /// ```sql
+    /// CREATE TABLE t (v VARIANT<'a': INT>)
+    /// ```
+    ///
+    /// [Doris](https://doris.apache.org/docs/sql-manual/basic-element/sql-data-types/semi-structured/VARIANT)
+    fn supports_variant_typed_fields(&self) -> bool {
+        false
+    }
 }
 
 /// Operators for which precedence must be defined.

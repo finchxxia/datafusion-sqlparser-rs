@@ -368,4 +368,12 @@ impl Dialect for GenericDialect {
     fn supports_insert_replace(&self) -> bool {
         true
     }
+
+    fn supports_agg_state_type(&self) -> bool {
+        true
+    }
+
+    fn supports_variant_typed_fields(&self) -> bool {
+        true
+    }
 }

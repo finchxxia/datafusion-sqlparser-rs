@@ -103,6 +103,14 @@ impl Dialect for DorisDialect {
         true
     }
 
+    fn supports_agg_state_type(&self) -> bool {
+        true
+    }
+
+    fn supports_variant_typed_fields(&self) -> bool {
+        true
+    }
+
     fn supports_double_quoted_comment_string(&self) -> bool {
         true
     }
