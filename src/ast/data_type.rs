@@ -864,11 +864,7 @@ impl fmt::Display for DataType {
                         if !fields.is_empty() {
                             write!(f, ", ")?;
                         }
-                        write!(
-                            f,
-                            "PROPERTIES ({})",
-                            display_comma_separated(properties)
-                        )?;
+                        write!(f, "PROPERTIES ({})", display_comma_separated(properties))?;
                     }
                     write!(f, ">")
                 }

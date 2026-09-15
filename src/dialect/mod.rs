@@ -1367,6 +1367,13 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports a `CREATE TABLE` column list made
+    /// of bare identifiers without data types, used by CTAS column lists such
+    /// as `CREATE TABLE t (a, b) AS SELECT ...` in Apache Doris.
+    fn supports_create_table_bare_column_list(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports an inline table `INDEX` definition
     /// whose index type and options follow the column list, for example the
     /// Apache Doris syntax `INDEX <name> (<cols>) USING INVERTED`.

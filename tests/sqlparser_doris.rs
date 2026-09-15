@@ -485,11 +485,13 @@ fn ast_doris_batch_range_partition() {
                     to,
                     interval_value,
                     interval_unit,
+                    properties,
                 } => {
                     assert_eq!(from.len(), 1);
                     assert_eq!(to.len(), 1);
                     assert_eq!(*interval_value, 1);
                     assert_eq!(interval_unit.as_ref().unwrap(), &Ident::new("DAY"));
+                    assert!(properties.is_empty());
                 }
                 _ => panic!("Expected BatchRange entry"),
             }
@@ -1004,9 +1006,8 @@ fn ansi_rejects_doris_column_key_option() {
 #[test]
 fn parse_doris_agg_state_type() {
     doris_and_generic().verified_stmt("CREATE TABLE t (v AGG_STATE<sum(INT)>)");
-    doris_and_generic().verified_stmt(
-        "CREATE TABLE t (v AGG_STATE<group_concat(VARCHAR(20), VARCHAR NOT NULL)>)",
-    );
+    doris_and_generic()
+        .verified_stmt("CREATE TABLE t (v AGG_STATE<group_concat(VARCHAR(20), VARCHAR NOT NULL)>)");
     doris_and_generic().verified_stmt("CREATE TABLE t (v AGG_STATE<sum(INT NULL)>)");
     doris_and_generic().verified_stmt("CREATE TABLE t (v AGG_STATE)");
 }
@@ -1042,18 +1043,16 @@ fn ast_doris_bare_agg_state_type() {
     let sql = "CREATE TABLE t (v AGG_STATE)";
     let stmt = doris().verified_stmt(sql);
     match stmt {
-        Statement::CreateTable(CreateTable { columns, .. }) => {
-            match &columns[0].data_type {
-                DataType::AggState {
-                    function,
-                    arg_types,
-                } => {
-                    assert!(function.is_none());
-                    assert!(arg_types.is_empty());
-                }
-                other => panic!("Expected AggState, got {other:?}"),
+        Statement::CreateTable(CreateTable { columns, .. }) => match &columns[0].data_type {
+            DataType::AggState {
+                function,
+                arg_types,
+            } => {
+                assert!(function.is_none());
+                assert!(arg_types.is_empty());
             }
-        }
+            other => panic!("Expected AggState, got {other:?}"),
+        },
         _ => panic!("Expected CreateTable"),
     }
 }
@@ -1063,17 +1062,14 @@ fn parse_doris_variant_type() {
     doris_and_generic().verified_stmt("CREATE TABLE t (v VARIANT)");
     doris_and_generic().verified_stmt("CREATE TABLE t (v VARIANT<'a': INT, 'b': STRING>)");
     doris_and_generic().verified_stmt("CREATE TABLE t (v VARIANT<MATCH_NAME 'x': INT>)");
-    doris_and_generic().verified_stmt(
-        "CREATE TABLE t (v VARIANT<'a': INT COMMENT 'column a'>)",
-    );
+    doris_and_generic().verified_stmt("CREATE TABLE t (v VARIANT<'a': INT COMMENT 'column a'>)");
     // MAP<...> angle-bracket syntax and double-quoted strings differ
     // between the doris and generic dialects.
     doris().verified_stmt(
         r#"CREATE TABLE t (v VARIANT<MATCH_NAME_GLOB 'x': MAP<STRING, INT>, PROPERTIES ("k" = "v")>)"#,
     );
     doris().verified_stmt(r#"CREATE TABLE t (v VARIANT<PROPERTIES ("k" = "v")>)"#);
-    doris_and_generic()
-        .verified_stmt("CREATE TABLE t (v VARIANT<PROPERTIES ('k' = 'v')>)");
+    doris_and_generic().verified_stmt("CREATE TABLE t (v VARIANT<PROPERTIES ('k' = 'v')>)");
 }
 
 #[test]
@@ -1324,4 +1320,153 @@ fn generic_partition_by_expression_still_parses() {
         }
         _ => panic!("Expected CreateTable"),
     }
+}
+
+#[test]
+fn parse_doris_create_table_trailing_comma() {
+    doris().one_statement_parses_to(
+        r#"CREATE TABLE t (
+  c VARCHAR(117) NOT NULL,
+) ENGINE=OLAP DUPLICATE KEY(c)"#,
+        "CREATE TABLE t (c VARCHAR(117) NOT NULL) ENGINE = OLAP DUPLICATE KEY(c)",
+    );
+}
+
+#[test]
+fn ansi_rejects_create_table_trailing_comma() {
+    let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
+    let sql = "CREATE TABLE t (c VARCHAR(117) NOT NULL,)";
+    assert!(ansi.parse_sql_statements(sql).is_err());
+}
+
+#[test]
+fn parse_doris_inline_index_if_not_exists() {
+    doris().verified_stmt(
+        "CREATE TABLE t (k BIGINT, name STRING, INDEX IF NOT EXISTS idx_name (name) USING INVERTED) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn ast_doris_inline_index_if_not_exists() {
+    let sql = "CREATE TABLE t (k BIGINT, name STRING, INDEX IF NOT EXISTS idx_name (name) USING INVERTED) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8";
+    let stmt = doris().verified_stmt(sql);
+    match stmt {
+        Statement::CreateTable(CreateTable { constraints, .. }) => {
+            assert_eq!(constraints.len(), 1);
+            match &constraints[0] {
+                TableConstraint::Index(index) => {
+                    assert!(index.if_not_exists);
+                    assert_eq!(index.name, Some(Ident::new("idx_name")));
+                    assert_eq!(
+                        index.index_options[0],
+                        IndexOption::Using(IndexType::Inverted)
+                    );
+                }
+                other => panic!("Expected Index constraint, got {other:?}"),
+            }
+        }
+        _ => panic!("Expected CreateTable"),
+    }
+}
+
+#[test]
+fn parse_doris_ctas_bare_column_list() {
+    doris().verified_stmt("CREATE TABLE t (a, b) AS SELECT 1, 2");
+}
+
+#[test]
+fn ast_doris_ctas_bare_column_list() {
+    let stmt = doris().verified_stmt("CREATE TABLE t (a, b) AS SELECT 1, 2");
+    match stmt {
+        Statement::CreateTable(CreateTable { columns, query, .. }) => {
+            assert_eq!(columns.len(), 2);
+            assert!(columns
+                .iter()
+                .all(|column| column.data_type == DataType::Unspecified));
+            assert!(query.is_some());
+        }
+        _ => panic!("Expected CreateTable"),
+    }
+}
+
+#[test]
+fn ansi_rejects_ctas_bare_column_list() {
+    let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
+    let sql = "CREATE TABLE t (a, b) AS SELECT 1, 2";
+    assert!(ansi.parse_sql_statements(sql).is_err());
+}
+
+#[test]
+fn parse_doris_partition_bare_properties() {
+    doris().one_statement_parses_to(
+        r#"CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01') ("replication_num" = "1")) DISTRIBUTED BY HASH(k) BUCKETS 8"#,
+        r#"CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01') PROPERTIES ("replication_num" = "1")) DISTRIBUTED BY HASH(k) BUCKETS 8"#,
+    );
+    doris_and_generic().one_statement_parses_to(
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01') ('storage_medium' = 'SSD')) DISTRIBUTED BY HASH(k) BUCKETS 8",
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01') PROPERTIES ('storage_medium' = 'SSD')) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_partition_batch_range_properties() {
+    doris().one_statement_parses_to(
+        r#"CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (FROM ('2024-01-01') TO ('2024-02-01') INTERVAL 1 DAY ("k" = "v")) DISTRIBUTED BY HASH(k) BUCKETS 8"#,
+        r#"CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (FROM ('2024-01-01') TO ('2024-02-01') INTERVAL 1 DAY PROPERTIES ("k" = "v")) DISTRIBUTED BY HASH(k) BUCKETS 8"#,
+    );
+    doris_and_generic().one_statement_parses_to(
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (FROM ('2024-01-01') TO ('2024-02-01') INTERVAL 1 DAY ('k' = 'v')) DISTRIBUTED BY HASH(k) BUCKETS 8",
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (FROM ('2024-01-01') TO ('2024-02-01') INTERVAL 1 DAY PROPERTIES ('k' = 'v')) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn ast_doris_batch_range_partition_properties() {
+    let sql = r#"CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (FROM ('2024-01-01') TO ('2024-02-01') INTERVAL 1 DAY ("k" = "v")) DISTRIBUTED BY HASH(k) BUCKETS 8"#;
+    let stmt = doris().one_statement_parses_to(
+        sql,
+        r#"CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (FROM ('2024-01-01') TO ('2024-02-01') INTERVAL 1 DAY PROPERTIES ("k" = "v")) DISTRIBUTED BY HASH(k) BUCKETS 8"#,
+    );
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            table_model:
+                Some(TableModel {
+                    partitioning: Some(dp),
+                    ..
+                }),
+            ..
+        }) => {
+            assert_eq!(dp.partitions.len(), 1);
+            match &dp.partitions[0] {
+                TablePartitioningEntry::BatchRange {
+                    interval_value,
+                    interval_unit,
+                    properties,
+                    ..
+                } => {
+                    assert_eq!(*interval_value, 1);
+                    assert_eq!(interval_unit.as_ref().unwrap(), &Ident::new("DAY"));
+                    assert_eq!(properties.len(), 1);
+                }
+                _ => panic!("Expected BatchRange entry"),
+            }
+        }
+        _ => panic!("Expected CreateTable with partitioning"),
+    }
+}
+
+#[test]
+fn parse_doris_partition_in_without_values_keyword() {
+    doris_and_generic().one_statement_parses_to(
+        "CREATE TABLE t (k BIGINT, city STRING) DUPLICATE KEY(k) PARTITION BY LIST(city) (PARTITION p1 (('a'), ('b'))) DISTRIBUTED BY HASH(k) BUCKETS 8",
+        "CREATE TABLE t (k BIGINT, city STRING) DUPLICATE KEY(k) PARTITION BY LIST(city) (PARTITION p1 VALUES IN (('a'), ('b'))) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
+}
+
+#[test]
+fn parse_doris_partition_bare_name_no_values() {
+    doris_and_generic().one_statement_parses_to(
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01'), PARTITION p2) DISTRIBUTED BY HASH(k) BUCKETS 8",
+        "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01'), PARTITION p2 VALUES IN ()) DISTRIBUTED BY HASH(k) BUCKETS 8",
+    );
 }

@@ -3159,7 +3159,7 @@ impl fmt::Display for TablePartitioningDefinition {
 pub enum TablePartitioningEntry {
     /// Named partition: `PARTITION <name> VALUES ...`
     Definition(TablePartitioningDefinition),
-    /// Batch range: `FROM (...) TO (...) INTERVAL <n> [<unit>]`
+    /// Batch range: `FROM (...) TO (...) INTERVAL <n> [<unit>] [PROPERTIES (...)]`
     BatchRange {
         /// Lower bound values.
         from: Vec<Expr>,
@@ -3169,6 +3169,8 @@ pub enum TablePartitioningEntry {
         interval_value: u64,
         /// Optional interval unit (e.g. DAY, MONTH).
         interval_unit: Option<Ident>,
+        /// Optional per-partition properties.
+        properties: Vec<SqlOption>,
     },
 }
 
@@ -3181,6 +3183,7 @@ impl fmt::Display for TablePartitioningEntry {
                 to,
                 interval_value,
                 interval_unit,
+                properties,
             } => {
                 write!(
                     f,
@@ -3191,6 +3194,9 @@ impl fmt::Display for TablePartitioningEntry {
                 )?;
                 if let Some(unit) = interval_unit {
                     write!(f, " {unit}")?;
+                }
+                if !properties.is_empty() {
+                    write!(f, " PROPERTIES ({})", display_comma_separated(properties))?;
                 }
                 Ok(())
             }

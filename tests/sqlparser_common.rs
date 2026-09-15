@@ -16347,7 +16347,9 @@ fn parse_column_definition_trailing_commas() {
     );
 
     let unsupported_dialects = all_dialects_where(|d| {
-        !d.supports_projection_trailing_commas() && !d.supports_trailing_commas()
+        !d.supports_projection_trailing_commas()
+            && !d.supports_trailing_commas()
+            && !d.supports_column_definition_trailing_commas()
     });
     assert_eq!(
         unsupported_dialects

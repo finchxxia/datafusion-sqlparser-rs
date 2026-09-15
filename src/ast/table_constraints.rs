@@ -382,6 +382,8 @@ impl crate::ast::Spanned for FullTextOrSpatialConstraint {
 pub struct IndexConstraint {
     /// Whether this index starts with KEY (true) or INDEX (false), to maintain the same syntax.
     pub display_as_key: bool,
+    /// `IF NOT EXISTS` clause, e.g. Apache Doris `INDEX IF NOT EXISTS <name> (<cols>)`.
+    pub if_not_exists: bool,
     /// Index name.
     pub name: Option<Ident>,
     /// Optional [index type][1].
@@ -398,6 +400,9 @@ pub struct IndexConstraint {
 impl fmt::Display for IndexConstraint {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", if self.display_as_key { "KEY" } else { "INDEX" })?;
+        if self.if_not_exists {
+            write!(f, " IF NOT EXISTS")?;
+        }
         if let Some(name) = &self.name {
             write!(f, " {name}")?;
         }

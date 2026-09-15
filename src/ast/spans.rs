@@ -612,12 +612,14 @@ impl Spanned for TablePartitioningEntry {
                 from,
                 to,
                 interval_unit,
+                properties,
                 ..
             } => union_spans(
                 from.iter()
                     .chain(to.iter())
                     .map(|i| i.span())
-                    .chain(interval_unit.iter().map(|i| i.span)),
+                    .chain(interval_unit.iter().map(|i| i.span))
+                    .chain(properties.iter().map(|i| i.span())),
             ),
         }
     }
