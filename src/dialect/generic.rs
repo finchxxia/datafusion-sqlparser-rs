@@ -197,7 +197,15 @@ impl Dialect for GenericDialect {
         true
     }
 
+    fn supports_create_table_rollup_clause(&self) -> bool {
+        true
+    }
+
     fn supports_create_table_properties_clause(&self) -> bool {
+        true
+    }
+
+    fn supports_create_table_broker_properties_clause(&self) -> bool {
         true
     }
 

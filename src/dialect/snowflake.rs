@@ -906,6 +906,7 @@ pub fn parse_create_table(
                         crate::ast::CreateTableLike {
                             name,
                             defaults: None,
+                            rollup_names: None,
                         },
                     )));
                 }

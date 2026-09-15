@@ -2969,7 +2969,7 @@ pub struct TableKeyModel {
     ///
     /// The parser accepts this clause for all Doris key models and leaves
     /// model-specific semantic validation to Doris or downstream consumers.
-    pub order_by: Option<Vec<Ident>>,
+    pub order_by: Option<Vec<OrderByExpr>>,
 }
 
 impl fmt::Display for TableKeyModel {
@@ -3231,6 +3231,47 @@ impl fmt::Display for TablePartitioning {
     }
 }
 
+/// One rollup definition inside a `ROLLUP (...)` clause (Apache Doris).
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub struct TableRollup {
+    /// Rollup name.
+    pub name: Ident,
+    /// Rollup columns.
+    pub columns: Vec<Ident>,
+    /// Optional `DUPLICATE KEY (cols)` clause.
+    pub duplicate_keys: Option<Vec<Ident>>,
+    /// Optional `PROPERTIES (...)` clause.
+    pub properties: Vec<SqlOption>,
+}
+
+impl fmt::Display for TableRollup {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{} ({})",
+            self.name,
+            display_comma_separated(&self.columns)
+        )?;
+        if let Some(duplicate_keys) = &self.duplicate_keys {
+            write!(
+                f,
+                " DUPLICATE KEY ({})",
+                display_comma_separated(duplicate_keys)
+            )?;
+        }
+        if !self.properties.is_empty() {
+            write!(
+                f,
+                " PROPERTIES ({})",
+                display_comma_separated(&self.properties)
+            )?;
+        }
+        Ok(())
+    }
+}
+
 /// Grouped table model clauses such as engine, key model, partitioning, distribution, and properties.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -3246,8 +3287,12 @@ pub struct TableModel {
     pub partitioning: Option<TablePartitioning>,
     /// Table distribution clause.
     pub distribution: Option<TableDistribution>,
+    /// `ROLLUP (...)` rollup index definitions.
+    pub rollups: Vec<TableRollup>,
     /// Table model properties.
     pub properties: Vec<SqlOption>,
+    /// Legacy `BROKER PROPERTIES (...)` clause (Apache Doris external tables).
+    pub broker_properties: Vec<SqlOption>,
 }
 
 impl fmt::Display for TableModel {
@@ -3277,11 +3322,27 @@ impl fmt::Display for TableModel {
             write!(f, "{separator}{distribution}")?;
             separator = " ";
         }
+        if !self.rollups.is_empty() {
+            write!(
+                f,
+                "{separator}ROLLUP ({})",
+                display_comma_separated(&self.rollups)
+            )?;
+            separator = " ";
+        }
         if !self.properties.is_empty() {
             write!(
                 f,
                 "{separator}PROPERTIES ({})",
                 display_comma_separated(&self.properties)
+            )?;
+            separator = " ";
+        }
+        if !self.broker_properties.is_empty() {
+            write!(
+                f,
+                "{separator}BROKER PROPERTIES ({})",
+                display_comma_separated(&self.broker_properties)
             )?;
         }
         Ok(())

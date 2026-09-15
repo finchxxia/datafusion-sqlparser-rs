@@ -844,10 +844,12 @@ mod tests {
                     columns: vec![key.clone()],
                     buckets: Some(BucketCount::Auto),
                 }),
+                rollups: vec![],
                 properties: vec![SqlOption::KeyValue {
                     key: Ident::new("replication_num"),
                     value: property_value,
                 }],
+                broker_properties: vec![],
             }),
         );
 

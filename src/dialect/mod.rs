@@ -1343,9 +1343,21 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports a `ROLLUP (...)` rollup index
+    /// clause in `CREATE TABLE`, for example Apache Doris.
+    fn supports_create_table_rollup_clause(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports a `PROPERTIES (...)` clause in
     /// `CREATE TABLE`.
     fn supports_create_table_properties_clause(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect supports a legacy `BROKER PROPERTIES (...)`
+    /// clause in `CREATE TABLE`, for example Apache Doris external tables.
+    fn supports_create_table_broker_properties_clause(&self) -> bool {
         false
     }
 
