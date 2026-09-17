@@ -11723,6 +11723,33 @@ impl<'a> Parser<'a> {
                 options,
                 column_position,
             }
+        } else if self.dialect.supports_alter_table_modify_partition()
+            && self.peek_keywords(&[Keyword::MODIFY, Keyword::PARTITION])
+            && (self.peek_nth_token_ref(2).token == Token::LParen
+                || matches!(&self.peek_nth_token_ref(3).token, Token::Word(w) if w.keyword == Keyword::SET))
+        {
+            self.expect_keywords(&[Keyword::MODIFY, Keyword::PARTITION])?;
+            let partition = if self.consume_token(&Token::LParen) {
+                let partitions = if self.consume_token(&Token::Mul) {
+                    vec![Expr::Wildcard(AttachedToken(
+                        self.get_current_token().clone(),
+                    ))]
+                } else {
+                    self.parse_comma_separated(|p| p.parse_identifier().map(Expr::Identifier))?
+                };
+                self.expect_token(&Token::RParen)?;
+                Partition::Partitions(partitions)
+            } else {
+                Partition::Expr(Expr::Identifier(self.parse_identifier()?))
+            };
+            self.expect_keyword(Keyword::SET)?;
+            self.expect_token(&Token::LParen)?;
+            let properties = self.parse_comma_separated(Parser::parse_sql_option)?;
+            self.expect_token(&Token::RParen)?;
+            AlterTableOperation::ModifyPartition {
+                partition,
+                properties,
+            }
         } else if self.dialect.supports_alter_table_modify_engine()
             && self.parse_keywords(&[Keyword::MODIFY, Keyword::ENGINE, Keyword::TO])
         {

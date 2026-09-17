@@ -21,6 +21,7 @@
 #[macro_use]
 mod test_utils;
 
+use sqlparser::ast::helpers::attached_token::AttachedToken;
 use sqlparser::ast::*;
 use sqlparser::dialect::{AnsiDialect, Dialect, DorisDialect, GenericDialect};
 use sqlparser::tokenizer::Token;
@@ -1646,5 +1647,130 @@ fn doris_alter_table_modify_engine_ast_and_errors() {
             .unwrap_err()
             .to_string(),
         "sql parser error: Expected: end of statement, found: odbc"
+    );
+}
+
+#[test]
+fn parse_doris_alter_table_modify_partition() {
+    for sql in [
+        r#"ALTER TABLE create_table_partition MODIFY PARTITION (*) SET("storage_policy"="created_create_table_partition_alter_policy");"#,
+        r#"ALTER TABLE example_db.my_table
+MODIFY PARTITION p1 SET("replication_num"="1");"#,
+        r#"ALTER TABLE example_db.my_table
+MODIFY PARTITION (p1, p2, p4) SET("replication_num"="1");"#,
+        r#"ALTER TABLE example_db.my_table
+MODIFY PARTITION (*) SET("storage_medium"="HDD");"#,
+    ] {
+        let expected = sql
+            .replace('\n', " ")
+            .replace("SET(", "SET (")
+            .replace("\"=\"", "\" = \"");
+        doris().one_statement_parses_to(sql, expected.trim_end_matches(';'));
+    }
+    for selector in ["p1", "(p1)", "(p1, p2, p4)", "(*)", "`partition-name`"] {
+        doris_and_generic().verified_stmt(&format!(
+            "ALTER TABLE t MODIFY PARTITION {selector} SET ('replication_num' = '1')"
+        ));
+    }
+}
+
+#[test]
+fn doris_alter_table_modify_partition_ast_and_errors() {
+    let dialects = all_dialects_where(|d| d.supports_alter_table_modify_partition());
+    for (selector, expected) in [
+        ("p1", Partition::Expr(Expr::Identifier(Ident::new("p1")))),
+        (
+            "(p1, p2)",
+            Partition::Partitions(vec![
+                Expr::Identifier(Ident::new("p1")),
+                Expr::Identifier(Ident::new("p2")),
+            ]),
+        ),
+        (
+            "(*)",
+            Partition::Partitions(vec![Expr::Wildcard(AttachedToken::empty())]),
+        ),
+    ] {
+        let stmt = dialects.verified_stmt(&format!("ALTER TABLE t MODIFY PARTITION {selector} SET ('replication_num' = '1', 'storage_medium' = 'HDD')"));
+        let Statement::AlterTable(table) = stmt else {
+            panic!("Expected ALTER TABLE")
+        };
+        let AlterTableOperation::ModifyPartition {
+            partition,
+            properties,
+        } = &table.operations[0]
+        else {
+            panic!("Expected MODIFY PARTITION")
+        };
+        assert_eq!(partition, &expected);
+        assert_eq!(properties.len(), 2);
+        assert_eq!(properties[0].to_string(), "'replication_num' = '1'");
+        assert!(table.properties.is_empty());
+    }
+    dialects.verified_stmt(
+        "ALTER TABLE t MODIFY PARTITION p1 SET ('k' = 'v'), MODIFY PARTITION p2 SET ('k' = 'w')",
+    );
+    dialects.verified_stmt("ALTER TABLE t MODIFY COLUMN partition INT");
+    dialects.one_statement_parses_to(
+        "ALTER TABLE t MODIFY partition INT",
+        "ALTER TABLE t MODIFY COLUMN partition INT",
+    );
+    for (sql, expected) in [
+        (
+            "ALTER TABLE t MODIFY PARTITION () SET ('k' = 'v')",
+            "Expected: identifier, found: )",
+        ),
+        (
+            "ALTER TABLE t MODIFY PARTITION (*, p1) SET ('k' = 'v')",
+            "Expected: ), found: ,",
+        ),
+        (
+            "ALTER TABLE t MODIFY PARTITION (p1, *) SET ('k' = 'v')",
+            "Expected: identifier, found: *",
+        ),
+        (
+            "ALTER TABLE t MODIFY PARTITION (p1,) SET ('k' = 'v')",
+            "Expected: identifier, found: )",
+        ),
+        (
+            "ALTER TABLE t MODIFY PARTITION * SET ('k' = 'v')",
+            "Expected: identifier, found: *",
+        ),
+        (
+            "ALTER TABLE t MODIFY PARTITION (p1)",
+            "Expected: SET, found: EOF",
+        ),
+        (
+            "ALTER TABLE t MODIFY PARTITION (p1 + 1) SET ('k' = 'v')",
+            "Expected: ), found: +",
+        ),
+        (
+            "ALTER TABLE t MODIFY PARTITION p1 SET",
+            "Expected: (, found: EOF",
+        ),
+        (
+            "ALTER TABLE t MODIFY PARTITION p1 SET ('k')",
+            "Expected: =, found: )",
+        ),
+        (
+            "ALTER TABLE t MODIFY PARTITION p1 SET ()",
+            "Expected: identifier, found: )",
+        ),
+        (
+            "ALTER TABLE t MODIFY PARTITION p1 SET ('k' = 'v'",
+            "Expected: ), found: EOF",
+        ),
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql).unwrap_err().to_string(),
+            format!("sql parser error: {expected}")
+        );
+    }
+    assert_eq!(
+        all_dialects_where(|d| !d.supports_alter_table_modify_partition())
+            .parse_sql_statements("ALTER TABLE t MODIFY PARTITION (*) SET ('k' = 'v')")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: a data type name, found: ("
     );
 }

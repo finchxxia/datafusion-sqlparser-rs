@@ -407,6 +407,13 @@ pub enum AlterTableOperation {
         /// MySQL-specific column position (`FIRST`/`AFTER`).
         column_position: Option<MySQLColumnPosition>,
     },
+    /// `MODIFY PARTITION <name>|(<names>)|(*) SET (...)`
+    ModifyPartition {
+        /// Named partition, parenthesized list, or parenthesized wildcard.
+        partition: Partition,
+        /// Properties applied to the selected partitions.
+        properties: Vec<SqlOption>,
+    },
     /// `MODIFY ENGINE TO <engine> [PROPERTIES (...)]`
     ModifyEngine {
         /// Target engine identifier.
@@ -971,6 +978,16 @@ impl fmt::Display for AlterTableOperation {
                 }
 
                 Ok(())
+            }
+            AlterTableOperation::ModifyPartition {
+                partition,
+                properties,
+            } => {
+                write!(
+                    f,
+                    "MODIFY {partition} SET ({})",
+                    display_comma_separated(properties)
+                )
             }
             AlterTableOperation::ModifyEngine { engine, properties } => {
                 write!(f, "MODIFY ENGINE TO {engine}")?;
