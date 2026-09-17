@@ -11538,7 +11538,26 @@ impl<'a> Parser<'a> {
                 );
             }
         } else if self.parse_keyword(Keyword::ENABLE) {
-            if self.parse_keywords(&[Keyword::ALWAYS, Keyword::RULE]) {
+            if self.dialect.supports_alter_table_enable_feature()
+                && self.parse_keyword(Keyword::FEATURE)
+            {
+                let token = self.peek_token();
+                let name = self.parse_value()?;
+                if !matches!(
+                    name.value,
+                    Value::SingleQuotedString(_) | Value::DoubleQuotedString(_)
+                ) {
+                    return self.expected("quoted feature name", token);
+                }
+                let properties = if self.parse_keyword(Keyword::WITH) {
+                    self.expect_keyword(Keyword::PROPERTIES)?;
+                    self.prev_token();
+                    self.parse_options_with_keywords(&[Keyword::PROPERTIES])?
+                } else {
+                    vec![]
+                };
+                AlterTableOperation::EnableFeature { name, properties }
+            } else if self.parse_keywords(&[Keyword::ALWAYS, Keyword::RULE]) {
                 let name = self.parse_identifier()?;
                 AlterTableOperation::EnableAlwaysRule { name }
             } else if self.parse_keywords(&[Keyword::ALWAYS, Keyword::TRIGGER]) {

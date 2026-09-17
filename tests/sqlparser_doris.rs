@@ -1522,3 +1522,60 @@ fn doris_alter_table_properties_errors() {
         "sql parser error: Expected: end of statement, found: PROPERTIES"
     );
 }
+
+#[test]
+fn parse_doris_alter_table_enable_feature() {
+    doris().verified_stmt(r#"ALTER TABLE example_db.my_table ENABLE FEATURE "SEQUENCE_LOAD" WITH PROPERTIES ("function_column.sequence_type" = "Date")"#);
+    doris_and_generic().verified_stmt("ALTER TABLE t ENABLE FEATURE 'BATCH_DELETE'");
+    doris_and_generic().verified_stmt("ALTER TABLE t ENABLE FEATURE 'SEQUENCE_LOAD' WITH PROPERTIES ('function_column.sequence_type' = 'Date')");
+}
+
+#[test]
+fn doris_alter_table_enable_feature_ast_and_errors() {
+    let dialects = all_dialects_where(|d| d.supports_alter_table_enable_feature());
+    let stmt = dialects.verified_stmt("ALTER TABLE t ENABLE FEATURE 'SEQUENCE_LOAD' WITH PROPERTIES ('function_column.sequence_type' = 'Date')");
+    let Statement::AlterTable(table) = stmt else {
+        panic!("Expected ALTER TABLE")
+    };
+    let AlterTableOperation::EnableFeature { name, properties } = &table.operations[0] else {
+        panic!("Expected ENABLE FEATURE")
+    };
+    assert_eq!(
+        name.value,
+        Value::SingleQuotedString("SEQUENCE_LOAD".into())
+    );
+    assert_eq!(properties.len(), 1);
+    assert_eq!(
+        properties[0].to_string(),
+        "'function_column.sequence_type' = 'Date'"
+    );
+    assert!(table.properties.is_empty());
+    for (sql, expected) in [
+        (
+            "ALTER TABLE t ENABLE FEATURE",
+            "Expected: a value, found: EOF",
+        ),
+        (
+            "ALTER TABLE t ENABLE FEATURE 1",
+            "Expected: quoted feature name, found: 1",
+        ),
+        (
+            "ALTER TABLE t ENABLE FEATURE 'x' WITH",
+            "Expected: PROPERTIES, found: EOF",
+        ),
+        (
+            "ALTER TABLE t ENABLE FEATURE 'x' WITH PROPERTIES",
+            "Expected: (, found: EOF",
+        ),
+        (
+            "ALTER TABLE t ENABLE FEATURE 'x' WITH PROPERTIES ('k')",
+            "Expected: =, found: )",
+        ),
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql).unwrap_err().to_string(),
+            format!("sql parser error: {expected}")
+        );
+    }
+    assert_eq!(all_dialects_where(|d| !d.supports_alter_table_enable_feature()).parse_sql_statements("ALTER TABLE t ENABLE FEATURE 'BATCH_DELETE'").unwrap_err().to_string(), "sql parser error: Expected: ALWAYS, REPLICA, ROW LEVEL SECURITY, RULE, or TRIGGER after ENABLE, found: FEATURE");
+}

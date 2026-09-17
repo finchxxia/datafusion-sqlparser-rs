@@ -1349,6 +1349,11 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Supports `ENABLE FEATURE` with optional `WITH PROPERTIES`.
+    fn supports_alter_table_enable_feature(&self) -> bool {
+        false
+    }
+
     /// Supports trailing `PROPERTIES (...)` on schema changes.
     fn supports_alter_table_properties(&self) -> bool {
         false

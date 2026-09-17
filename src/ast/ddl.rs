@@ -288,6 +288,13 @@ pub enum AlterTableOperation {
         /// Name of the index to drop.
         name: Ident,
     },
+    /// `ENABLE FEATURE <name> [WITH PROPERTIES (...)]`
+    EnableFeature {
+        /// Quoted feature name, preserving its string delimiter.
+        name: ValueWithSpan,
+        /// Optional feature configuration.
+        properties: Vec<SqlOption>,
+    },
     /// `ENABLE ALWAYS RULE rewrite_rule_name`
     ///
     /// Note: this is a PostgreSQL-specific operation.
@@ -886,6 +893,17 @@ impl fmt::Display for AlterTableOperation {
             }
             AlterTableOperation::DetachPartition { partition } => {
                 write!(f, "DETACH {partition}")
+            }
+            AlterTableOperation::EnableFeature { name, properties } => {
+                write!(f, "ENABLE FEATURE {name}")?;
+                if !properties.is_empty() {
+                    write!(
+                        f,
+                        " WITH PROPERTIES ({})",
+                        display_comma_separated(properties)
+                    )?;
+                }
+                Ok(())
             }
             AlterTableOperation::EnableAlwaysRule { name } => {
                 write!(f, "ENABLE ALWAYS RULE {name}")

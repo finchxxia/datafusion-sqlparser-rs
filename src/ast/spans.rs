@@ -1296,6 +1296,9 @@ impl Spanned for AlterTableOperation {
             AlterTableOperation::DropPrimaryKey { .. } => Span::empty(),
             AlterTableOperation::DropForeignKey { name, .. } => name.span,
             AlterTableOperation::DropIndex { name } => name.span,
+            AlterTableOperation::EnableFeature { name, properties } => union_spans(
+                core::iter::once(name.span()).chain(properties.iter().map(|p| p.span())),
+            ),
             AlterTableOperation::EnableAlwaysRule { name } => name.span,
             AlterTableOperation::EnableAlwaysTrigger { name } => name.span,
             AlterTableOperation::EnableReplicaRule { name } => name.span,
