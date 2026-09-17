@@ -1470,3 +1470,55 @@ fn parse_doris_partition_bare_name_no_values() {
         "CREATE TABLE t (k BIGINT, dt DATE) DUPLICATE KEY(k) PARTITION BY RANGE(dt) (PARTITION p1 VALUES LESS THAN ('2024-01-01'), PARTITION p2 VALUES IN ()) DISTRIBUTED BY HASH(k) BUCKETS 8",
     );
 }
+
+#[test]
+fn parse_doris_alter_table_properties() {
+    doris().one_statement_parses_to(
+        r#"ALTER TABLE example_db.my_table
+DROP COLUMN col2
+PROPERTIES ("bloom_filter_columns"="k1,k2,k3");"#,
+        r#"ALTER TABLE example_db.my_table DROP COLUMN col2 PROPERTIES ("bloom_filter_columns" = "k1,k2,k3")"#,
+    );
+    doris_and_generic()
+        .verified_stmt("ALTER TABLE t DROP COLUMN c, ADD COLUMN d INT PROPERTIES ('k' = 'v')");
+}
+
+#[test]
+fn doris_alter_table_properties_errors() {
+    for (sql, expected) in [
+        (
+            "ALTER TABLE t DROP COLUMN c PROPERTIES",
+            "Expected: (, found: EOF",
+        ),
+        (
+            "ALTER TABLE t DROP COLUMN c PROPERTIES ('k')",
+            "Expected: =, found: )",
+        ),
+        (
+            "ALTER TABLE t DROP COLUMN c PROPERTIES ('k' = 'v'",
+            "Expected: ), found: EOF",
+        ),
+    ] {
+        assert_eq!(
+            doris_and_generic()
+                .parse_sql_statements(sql)
+                .unwrap_err()
+                .to_string(),
+            format!("sql parser error: {expected}")
+        );
+    }
+    let stmt =
+        doris_and_generic().verified_stmt("ALTER TABLE t DROP COLUMN c PROPERTIES ('k' = 'v')");
+    let Statement::AlterTable(table) = stmt else {
+        panic!("Expected ALTER TABLE")
+    };
+    assert_eq!(table.properties.len(), 1);
+    assert_eq!(table.properties[0].to_string(), "'k' = 'v'");
+    assert_eq!(
+        TestedDialects::new(vec![Box::new(AnsiDialect {})])
+            .parse_sql_statements("ALTER TABLE t DROP COLUMN c PROPERTIES ('k' = 'v')")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: end of statement, found: PROPERTIES"
+    );
+}

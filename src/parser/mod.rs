@@ -12261,6 +12261,11 @@ impl<'a> Parser<'a> {
         let table_name = self.parse_object_name(false)?;
         let on_cluster = self.parse_optional_on_cluster()?;
         let operations = self.parse_comma_separated(Parser::parse_alter_table_operation)?;
+        let properties = if self.dialect.supports_alter_table_properties() {
+            self.parse_options_with_keywords(&[Keyword::PROPERTIES])?
+        } else {
+            vec![]
+        };
 
         let mut location = None;
         if self.parse_keyword(Keyword::LOCATION) {
@@ -12286,6 +12291,7 @@ impl<'a> Parser<'a> {
             if_exists,
             only,
             operations,
+            properties,
             location,
             on_cluster,
             table_type: if iceberg {

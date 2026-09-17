@@ -201,6 +201,10 @@ impl Dialect for GenericDialect {
         true
     }
 
+    fn supports_alter_table_properties(&self) -> bool {
+        true
+    }
+
     fn supports_create_table_properties_clause(&self) -> bool {
         true
     }

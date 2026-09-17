@@ -1349,6 +1349,11 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Supports trailing `PROPERTIES (...)` on schema changes.
+    fn supports_alter_table_properties(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports a `PROPERTIES (...)` clause in
     /// `CREATE TABLE`.
     fn supports_create_table_properties_clause(&self) -> bool {

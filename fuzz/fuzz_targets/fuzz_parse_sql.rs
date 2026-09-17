@@ -17,7 +17,7 @@
 
 use honggfuzz::fuzz;
 use sqlparser::dialect::{
-    AnsiDialect, BigQueryDialect, ClickHouseDialect, DatabricksDialect, DuckDbDialect,
+    AnsiDialect, BigQueryDialect, ClickHouseDialect, DatabricksDialect, DorisDialect, DuckDbDialect,
     GenericDialect, HiveDialect, MsSqlDialect, MySqlDialect, OracleDialect, PostgreSqlDialect,
     RedshiftSqlDialect, SQLiteDialect, SnowflakeDialect,
 };
@@ -29,6 +29,7 @@ fn main() {
         Box::new(BigQueryDialect::default()),
         Box::new(ClickHouseDialect::default()),
         Box::new(DatabricksDialect::default()),
+        Box::new(DorisDialect::default()),
         Box::new(DuckDbDialect::default()),
         Box::new(GenericDialect::default()),
         Box::new(HiveDialect::default()),

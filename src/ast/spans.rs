@@ -2665,6 +2665,7 @@ impl Spanned for AlterTable {
         union_spans(
             core::iter::once(self.name.span())
                 .chain(self.operations.iter().map(|i| i.span()))
+                .chain(self.properties.iter().map(|i| i.span()))
                 .chain(self.on_cluster.iter().map(|i| i.span))
                 .chain(core::iter::once(self.end_token.0.span)),
         )

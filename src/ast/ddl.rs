@@ -5250,6 +5250,8 @@ pub struct AlterTable {
     pub only: bool,
     /// List of `ALTER TABLE` operations to apply.
     pub operations: Vec<AlterTableOperation>,
+    /// Trailing properties shared by the schema change operations.
+    pub properties: Vec<SqlOption>,
     /// Optional Hive `SET LOCATION` clause for the alter operation.
     pub location: Option<HiveSetLocation>,
     /// ClickHouse dialect supports `ON CLUSTER` clause for ALTER TABLE
@@ -5282,6 +5284,13 @@ impl fmt::Display for AlterTable {
             write!(f, "ON CLUSTER {cluster} ")?;
         }
         write!(f, "{}", display_comma_separated(&self.operations))?;
+        if !self.properties.is_empty() {
+            write!(
+                f,
+                " PROPERTIES ({})",
+                display_comma_separated(&self.properties)
+            )?;
+        }
         if let Some(loc) = &self.location {
             write!(f, " {loc}")?
         }
