@@ -1349,6 +1349,11 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Supports `MODIFY ENGINE TO` with optional `PROPERTIES`.
+    fn supports_alter_table_modify_engine(&self) -> bool {
+        false
+    }
+
     /// Supports `ENABLE FEATURE` with optional `WITH PROPERTIES`.
     fn supports_alter_table_enable_feature(&self) -> bool {
         false

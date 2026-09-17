@@ -407,6 +407,13 @@ pub enum AlterTableOperation {
         /// MySQL-specific column position (`FIRST`/`AFTER`).
         column_position: Option<MySQLColumnPosition>,
     },
+    /// `MODIFY ENGINE TO <engine> [PROPERTIES (...)]`
+    ModifyEngine {
+        /// Target engine identifier.
+        engine: Ident,
+        /// Optional engine configuration.
+        properties: Vec<SqlOption>,
+    },
     // CHANGE [ COLUMN ] <col_name> <data_type> [ <options> ]
     /// Modify an existing column's type and options.
     ModifyColumn {
@@ -963,6 +970,13 @@ impl fmt::Display for AlterTableOperation {
                     write!(f, " {position}")?;
                 }
 
+                Ok(())
+            }
+            AlterTableOperation::ModifyEngine { engine, properties } => {
+                write!(f, "MODIFY ENGINE TO {engine}")?;
+                if !properties.is_empty() {
+                    write!(f, " PROPERTIES ({})", display_comma_separated(properties))?;
+                }
                 Ok(())
             }
             AlterTableOperation::ModifyColumn {

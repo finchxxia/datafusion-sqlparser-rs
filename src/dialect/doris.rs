@@ -79,6 +79,10 @@ impl Dialect for DorisDialect {
         true
     }
 
+    fn supports_alter_table_modify_engine(&self) -> bool {
+        true
+    }
+
     fn supports_alter_table_enable_feature(&self) -> bool {
         true
     }

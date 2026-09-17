@@ -11723,6 +11723,12 @@ impl<'a> Parser<'a> {
                 options,
                 column_position,
             }
+        } else if self.dialect.supports_alter_table_modify_engine()
+            && self.parse_keywords(&[Keyword::MODIFY, Keyword::ENGINE, Keyword::TO])
+        {
+            let engine = self.parse_identifier()?;
+            let properties = self.parse_options_with_keywords(&[Keyword::PROPERTIES])?;
+            AlterTableOperation::ModifyEngine { engine, properties }
         } else if self.parse_keyword(Keyword::MODIFY) {
             let _ = self.parse_keyword(Keyword::COLUMN); // [ COLUMN ]
             let col_name = self.parse_identifier()?;

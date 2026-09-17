@@ -1341,6 +1341,9 @@ impl Spanned for AlterTableOperation {
                     .chain(core::iter::once(new_name.span))
                     .chain(options.iter().map(|i| i.span())),
             ),
+            AlterTableOperation::ModifyEngine { engine, properties } => union_spans(
+                core::iter::once(engine.span).chain(properties.iter().map(|p| p.span())),
+            ),
             AlterTableOperation::ModifyColumn {
                 col_name,
                 data_type: _,

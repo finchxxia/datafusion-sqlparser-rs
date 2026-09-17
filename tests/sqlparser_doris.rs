@@ -1579,3 +1579,72 @@ fn doris_alter_table_enable_feature_ast_and_errors() {
     }
     assert_eq!(all_dialects_where(|d| !d.supports_alter_table_enable_feature()).parse_sql_statements("ALTER TABLE t ENABLE FEATURE 'BATCH_DELETE'").unwrap_err().to_string(), "sql parser error: Expected: ALWAYS, REPLICA, ROW LEVEL SECURITY, RULE, or TRIGGER after ENABLE, found: FEATURE");
 }
+
+#[test]
+fn parse_doris_alter_table_modify_engine() {
+    doris().one_statement_parses_to(
+        r#"ALTER TABLE example_db.mysql_table MODIFY ENGINE TO odbc PROPERTIES("driver" = "MySQL");"#,
+        r#"ALTER TABLE example_db.mysql_table MODIFY ENGINE TO odbc PROPERTIES ("driver" = "MySQL")"#,
+    );
+    doris_and_generic().verified_stmt("ALTER TABLE t MODIFY ENGINE TO odbc");
+    doris_and_generic()
+        .verified_stmt("ALTER TABLE t MODIFY ENGINE TO odbc PROPERTIES ('driver' = 'MySQL')");
+}
+
+#[test]
+fn doris_alter_table_modify_engine_ast_and_errors() {
+    let dialects = all_dialects_where(|d| d.supports_alter_table_modify_engine());
+    let stmt = dialects.verified_stmt(
+        "ALTER TABLE t MODIFY ENGINE TO odbc PROPERTIES ('driver' = 'MySQL', 'charset' = 'utf8')",
+    );
+    let Statement::AlterTable(table) = stmt else {
+        panic!("Expected ALTER TABLE")
+    };
+    let AlterTableOperation::ModifyEngine { engine, properties } = &table.operations[0] else {
+        panic!("Expected MODIFY ENGINE")
+    };
+    assert_eq!(engine, &Ident::new("odbc"));
+    assert_eq!(properties.len(), 2);
+    assert_eq!(properties[0].to_string(), "'driver' = 'MySQL'");
+    assert!(table.properties.is_empty());
+    dialects.verified_stmt("ALTER TABLE t MODIFY COLUMN engine INT");
+    dialects.one_statement_parses_to(
+        "ALTER TABLE t MODIFY engine INT",
+        "ALTER TABLE t MODIFY COLUMN engine INT",
+    );
+    dialects.verified_stmt("ALTER TABLE t MODIFY COLUMN c INT");
+    for (sql, expected) in [
+        (
+            "ALTER TABLE t MODIFY ENGINE",
+            "Expected: a data type name, found: EOF",
+        ),
+        (
+            "ALTER TABLE t MODIFY ENGINE TO",
+            "Expected: identifier, found: EOF",
+        ),
+        (
+            "ALTER TABLE t MODIFY ENGINE TO odbc PROPERTIES",
+            "Expected: (, found: EOF",
+        ),
+        (
+            "ALTER TABLE t MODIFY ENGINE TO odbc PROPERTIES ('driver')",
+            "Expected: =, found: )",
+        ),
+        (
+            "ALTER TABLE t MODIFY ENGINE TO odbc PROPERTIES ('driver' = 'MySQL'",
+            "Expected: ), found: EOF",
+        ),
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql).unwrap_err().to_string(),
+            format!("sql parser error: {expected}")
+        );
+    }
+    assert_eq!(
+        all_dialects_where(|d| !d.supports_alter_table_modify_engine())
+            .parse_sql_statements("ALTER TABLE t MODIFY ENGINE TO odbc")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: end of statement, found: odbc"
+    );
+}
