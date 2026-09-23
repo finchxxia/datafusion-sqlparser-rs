@@ -1369,6 +1369,12 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Supports `ADD [COLUMN] (<column_def>, ...)` adding multiple columns in
+    /// a single `ALTER TABLE` operation, for example Apache Doris and MySQL.
+    fn supports_alter_table_add_column_parenthesized_list(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports a `PROPERTIES (...)` clause in
     /// `CREATE TABLE`.
     fn supports_create_table_properties_clause(&self) -> bool {

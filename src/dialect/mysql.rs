@@ -234,6 +234,10 @@ impl Dialect for MySqlDialect {
     fn supports_left_associative_joins_without_parens(&self) -> bool {
         false
     }
+
+    fn supports_alter_table_add_column_parenthesized_list(&self) -> bool {
+        true
+    }
 }
 
 /// `LOCK TABLES`

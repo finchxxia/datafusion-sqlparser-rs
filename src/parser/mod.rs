@@ -11484,14 +11484,24 @@ impl<'a> Parser<'a> {
                         false
                     };
 
-                    let column_def = self.parse_column_def()?;
+                    let column_defs = if self
+                        .dialect
+                        .supports_alter_table_add_column_parenthesized_list()
+                        && self.consume_token(&Token::LParen)
+                    {
+                        let column_defs = self.parse_comma_separated(Parser::parse_column_def)?;
+                        self.expect_token(&Token::RParen)?;
+                        column_defs
+                    } else {
+                        vec![self.parse_column_def()?]
+                    };
 
                     let column_position = self.parse_column_position()?;
 
                     AlterTableOperation::AddColumn {
                         column_keyword,
                         if_not_exists,
-                        column_def,
+                        column_defs,
                         column_position,
                     }
                 }

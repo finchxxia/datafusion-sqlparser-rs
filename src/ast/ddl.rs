@@ -132,14 +132,15 @@ pub enum AlterTableOperation {
         /// Whether the constraint should be marked `NOT VALID`.
         not_valid: bool,
     },
-    /// `ADD [COLUMN] [IF NOT EXISTS] <column_def>`
+    /// `ADD [COLUMN] [IF NOT EXISTS] <column_def> | (<column_def>, ...)`
     AddColumn {
         /// `[COLUMN]`.
         column_keyword: bool,
         /// `[IF NOT EXISTS]`
         if_not_exists: bool,
-        /// <column_def>.
-        column_def: ColumnDef,
+        /// `<column_def>`s. A single element corresponds to the
+        /// unparenthesized form, e.g. `ADD COLUMN a INT`.
+        column_defs: Vec<ColumnDef>,
         /// MySQL `ALTER TABLE` only  [FIRST | AFTER column_name]
         column_position: Option<MySQLColumnPosition>,
     },
@@ -755,7 +756,7 @@ impl fmt::Display for AlterTableOperation {
             AlterTableOperation::AddColumn {
                 column_keyword,
                 if_not_exists,
-                column_def,
+                column_defs,
                 column_position,
             } => {
                 write!(f, "ADD")?;
@@ -765,7 +766,11 @@ impl fmt::Display for AlterTableOperation {
                 if *if_not_exists {
                     write!(f, " IF NOT EXISTS")?;
                 }
-                write!(f, " {column_def}")?;
+                if let [column_def] = column_defs.as_slice() {
+                    write!(f, " {column_def}")?;
+                } else {
+                    write!(f, " ({})", display_separated(column_defs, ", "))?;
+                }
 
                 if let Some(position) = column_position {
                     write!(f, " {position}")?;

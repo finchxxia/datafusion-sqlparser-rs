@@ -5150,13 +5150,14 @@ fn parse_alter_table() {
         AlterTableOperation::AddColumn {
             column_keyword,
             if_not_exists,
-            column_def,
+            column_defs,
             column_position,
         } => {
             assert!(column_keyword);
             assert!(!if_not_exists);
-            assert_eq!("foo", column_def.name.to_string());
-            assert_eq!("TEXT", column_def.data_type.to_string());
+            assert_eq!(1, column_defs.len());
+            assert_eq!("foo", column_defs[0].name.to_string());
+            assert_eq!("TEXT", column_defs[0].data_type.to_string());
             assert_eq!(None, column_position);
         }
         _ => unreachable!(),
@@ -19183,14 +19184,14 @@ fn parse_invisible_column() {
                 vec![AlterTableOperation::AddColumn {
                     column_keyword: true,
                     if_not_exists: false,
-                    column_def: ColumnDef {
+                    column_defs: vec![ColumnDef {
                         name: "bar".into(),
                         data_type: DataType::Int(None),
                         options: vec![ColumnOptionDef {
                             name: None,
                             option: ColumnOption::Invisible
                         }]
-                    },
+                    }],
                     column_position: None
                 }]
             );

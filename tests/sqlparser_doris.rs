@@ -1774,3 +1774,79 @@ fn doris_alter_table_modify_partition_ast_and_errors() {
         "sql parser error: Expected: a data type name, found: ("
     );
 }
+
+#[test]
+fn parse_doris_alter_table_add_columns() {
+    doris().one_statement_parses_to(
+        r#"ALTER TABLE bps_cdp.user_tag_wide
+ADD COLUMN (
+    total_game_cnt BIGINT COMMENT '总游戏场次',
+    real_cash_game_cnt BIGINT COMMENT '真金游戏场次',
+    win_game_cnt BIGINT COMMENT '游戏赢局数',
+    real_cash_win_cnt BIGINT COMMENT '真金游戏赢局数'
+);"#,
+        "ALTER TABLE bps_cdp.user_tag_wide ADD COLUMN (total_game_cnt BIGINT COMMENT '总游戏场次', real_cash_game_cnt BIGINT COMMENT '真金游戏场次', win_game_cnt BIGINT COMMENT '游戏赢局数', real_cash_win_cnt BIGINT COMMENT '真金游戏赢局数')",
+    );
+    doris_and_generic().verified_stmt("ALTER TABLE t ADD COLUMN (a BIGINT, b INT, c VARCHAR(10))");
+    doris_and_generic().verified_stmt("ALTER TABLE t ADD (a BIGINT, b INT)");
+    doris().verified_stmt("ALTER TABLE t ADD COLUMN (a BIGINT KEY, b BIGINT SUM DEFAULT '0')");
+    doris_and_generic()
+        .verified_stmt("ALTER TABLE t ADD COLUMN (a BIGINT, b INT) PROPERTIES ('k' = 'v')");
+    // A single column in parentheses is equivalent to the unparenthesized form.
+    doris_and_generic().one_statement_parses_to(
+        "ALTER TABLE t ADD COLUMN (a INT)",
+        "ALTER TABLE t ADD COLUMN a INT",
+    );
+}
+
+#[test]
+fn doris_alter_table_add_columns_ast_and_errors() {
+    let dialects = all_dialects_where(|d| d.supports_alter_table_add_column_parenthesized_list());
+    let stmt = dialects.verified_stmt("ALTER TABLE t ADD COLUMN (a BIGINT, b INT)");
+    let Statement::AlterTable(table) = stmt else {
+        panic!("Expected ALTER TABLE")
+    };
+    let [AlterTableOperation::AddColumn {
+        column_keyword,
+        if_not_exists,
+        column_defs,
+        column_position,
+    }] = table.operations.as_slice()
+    else {
+        panic!("Expected a single ADD COLUMN operation")
+    };
+    assert!(column_keyword);
+    assert!(!if_not_exists);
+    assert_eq!(&None, column_position);
+    assert_eq!(
+        vec!["a", "b"],
+        column_defs
+            .iter()
+            .map(|c| c.name.to_string())
+            .collect::<Vec<_>>()
+    );
+
+    for (sql, expected) in [
+        (
+            "ALTER TABLE t ADD COLUMN ()",
+            "Expected: identifier, found: )",
+        ),
+        (
+            "ALTER TABLE t ADD COLUMN (a INT,)",
+            "Expected: identifier, found: )",
+        ),
+        ("ALTER TABLE t ADD COLUMN (a INT", "Expected: ), found: EOF"),
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql).unwrap_err().to_string(),
+            format!("sql parser error: {expected}")
+        );
+    }
+    assert_eq!(
+        all_dialects_where(|d| !d.supports_alter_table_add_column_parenthesized_list())
+            .parse_sql_statements("ALTER TABLE t ADD COLUMN (a INT)")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: identifier, found: ("
+    );
+}

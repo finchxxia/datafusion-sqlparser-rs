@@ -2913,11 +2913,11 @@ fn parse_alter_table_add_column() {
                 vec![AlterTableOperation::AddColumn {
                     column_keyword: true,
                     if_not_exists: false,
-                    column_def: ColumnDef {
+                    column_defs: vec![ColumnDef {
                         name: "b".into(),
                         data_type: DataType::Int(None),
                         options: vec![],
-                    },
+                    }],
                     column_position: Some(MySQLColumnPosition::First),
                 },]
             );
@@ -2941,11 +2941,11 @@ fn parse_alter_table_add_column() {
                 vec![AlterTableOperation::AddColumn {
                     column_keyword: true,
                     if_not_exists: false,
-                    column_def: ColumnDef {
+                    column_defs: vec![ColumnDef {
                         name: "b".into(),
                         data_type: DataType::Int(None),
                         options: vec![],
-                    },
+                    }],
                     column_position: Some(MySQLColumnPosition::After(Ident {
                         value: String::from("foo"),
                         quote_style: None,
@@ -2979,21 +2979,21 @@ fn parse_alter_table_add_columns() {
                     AlterTableOperation::AddColumn {
                         column_keyword: true,
                         if_not_exists: false,
-                        column_def: ColumnDef {
+                        column_defs: vec![ColumnDef {
                             name: "a".into(),
                             data_type: DataType::Text,
                             options: vec![],
-                        },
+                        }],
                         column_position: Some(MySQLColumnPosition::First),
                     },
                     AlterTableOperation::AddColumn {
                         column_keyword: true,
                         if_not_exists: false,
-                        column_def: ColumnDef {
+                        column_defs: vec![ColumnDef {
                             name: "b".into(),
                             data_type: DataType::Int(None),
                             options: vec![],
-                        },
+                        }],
                         column_position: Some(MySQLColumnPosition::After(Ident {
                             value: String::from("foo"),
                             quote_style: None,
@@ -4974,5 +4974,15 @@ fn parse_is_distinct_from_json_arrow_precedence() {
             }),
         ),
         mysql_and_generic().verified_expr("a IS NOT DISTINCT FROM b ->> 'k'")
+    );
+}
+
+#[test]
+fn parse_alter_table_add_column_parenthesized_list() {
+    mysql_and_generic().verified_stmt("ALTER TABLE tab ADD COLUMN (a TEXT, b INT COMMENT 'c')");
+    mysql_and_generic().verified_stmt("ALTER TABLE tab ADD (a TEXT, b INT)");
+    mysql_and_generic().one_statement_parses_to(
+        "ALTER TABLE tab ADD COLUMN (a INT)",
+        "ALTER TABLE tab ADD COLUMN a INT",
     );
 }

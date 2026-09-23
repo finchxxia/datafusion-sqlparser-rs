@@ -1246,9 +1246,9 @@ impl Spanned for AlterTableOperation {
             AlterTableOperation::AddColumn {
                 column_keyword: _,
                 if_not_exists: _,
-                column_def,
+                column_defs,
                 column_position: _,
-            } => column_def.span(),
+            } => union_spans(column_defs.iter().map(|c| c.span())),
             AlterTableOperation::AddProjection {
                 if_not_exists: _,
                 name,

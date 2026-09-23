@@ -1228,21 +1228,21 @@ fn parse_alter_table_add_columns() {
                     AlterTableOperation::AddColumn {
                         column_keyword: true,
                         if_not_exists: false,
-                        column_def: ColumnDef {
+                        column_defs: vec![ColumnDef {
                             name: "a".into(),
                             data_type: DataType::Text,
                             options: vec![],
-                        },
+                        }],
                         column_position: None,
                     },
                     AlterTableOperation::AddColumn {
                         column_keyword: true,
                         if_not_exists: false,
-                        column_def: ColumnDef {
+                        column_defs: vec![ColumnDef {
                             name: "b".into(),
                             data_type: DataType::Int(None),
                             options: vec![],
-                        },
+                        }],
                         column_position: None,
                     },
                 ]
