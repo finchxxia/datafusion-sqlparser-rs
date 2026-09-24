@@ -2298,3 +2298,62 @@ fn parse_doris_broker_load_negative() {
         .parse_sql_statements("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t)")
         .is_err());
 }
+
+#[test]
+fn parse_doris_broker_load_full_data_desc() {
+    let dialects = all_dialects_where(|d| d.supports_broker_load());
+
+    dialects.verified_stmt(
+        "LOAD LABEL l (MERGE DATA INFILE ('f1', 'f2') NEGATIVE INTO TABLE db.t PARTITION (p1, p2) COLUMNS TERMINATED BY ',' LINES TERMINATED BY '|' FORMAT AS 'csv' COMPRESS_TYPE AS 'gz' (c1, c2) COLUMNS FROM PATH AS (c3, c4) SET (k1 = c1 * 2, k2 = year(c4)) PRECEDING FILTER c1 > 0 WHERE c2 IS NOT NULL DELETE ON c3 = 'x' ORDER BY c1 PROPERTIES ('k' = 'v'))",
+    );
+    dialects.verified_stmt("LOAD LABEL l (APPEND DATA INFILE ('f') INTO TABLE t)");
+    dialects.verified_stmt("LOAD LABEL l (DELETE DATA INFILE ('f') INTO TABLE t)");
+    dialects.verified_stmt("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t WHERE dt = '2024-01-01')");
+    dialects.verified_stmt("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t SET (k = lower(c1)))");
+    dialects.verified_stmt(
+        "LOAD LABEL l (DATA INFILE ('f') INTO TABLE t PROPERTIES ('strict_mode' = 'true'))",
+    );
+}
+
+#[test]
+fn ast_doris_broker_load_full_desc_is_structured() {
+    let stmt = doris().verified_stmt(
+        "LOAD LABEL l (MERGE DATA INFILE ('f') NEGATIVE INTO TABLE db.t PARTITION (p1) SET (k = f(c1)) WHERE c1 > 0 DELETE ON c2 = 'x' ORDER BY c1)",
+    );
+    let Statement::DorisBrokerLoad { data_descs, .. } = stmt else {
+        panic!("expected DorisBrokerLoad")
+    };
+    let desc = &data_descs[0];
+    assert_eq!(desc.merge_type, Some(DorisLoadMergeType::Merge));
+    assert!(desc.negative);
+    assert_eq!(desc.partition, Some(vec![Ident::new("p1")]));
+    assert_eq!(desc.set.as_ref().map(|s| s.len()), Some(1));
+    assert_eq!(
+        desc.where_clause,
+        Some(Expr::BinaryOp {
+            left: Box::new(Expr::Identifier(Ident::new("c1"))),
+            op: BinaryOperator::Gt,
+            right: Box::new(Expr::value(number("0"))),
+        })
+    );
+    assert_eq!(desc.order_by, Some(Ident::new("c1")),);
+    assert!(desc.delete_on.is_some());
+}
+
+#[test]
+fn parse_doris_broker_load_data_desc_negative() {
+    let dialects = all_dialects_where(|d| d.supports_broker_load());
+
+    // Merge type must be followed by DATA INFILE.
+    assert!(dialects
+        .parse_sql_statements("LOAD LABEL l (MERGE INTO TABLE t)")
+        .is_err());
+    // SET requires a parenthesized assignment list.
+    assert!(dialects
+        .parse_sql_statements("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t SET k = c1)")
+        .is_err());
+    // DELETE ON requires an expression.
+    assert!(dialects
+        .parse_sql_statements("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t DELETE ON)")
+        .is_err());
+}

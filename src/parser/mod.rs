@@ -21464,30 +21464,86 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse a `data_desc` in a Doris `LOAD LABEL` statement:
-    /// `DATA INFILE ("path"[, ...]) INTO TABLE t [clauses]`.
+    ///
+    /// ```sql
+    /// [MERGE | APPEND | DELETE] DATA INFILE ("path"[, ...]) [NEGATIVE]
+    /// INTO TABLE t [PARTITION (p, ...)]
+    /// [COLUMNS TERMINATED BY "sep"] [LINES TERMINATED BY "sep"]
+    /// [FORMAT AS "fmt"] [COMPRESS_TYPE AS "type"] [(col, ...)]
+    /// [COLUMNS FROM PATH AS (c, ...)] [SET (col = expr, ...)]
+    /// [PRECEDING FILTER expr] [WHERE expr] [DELETE ON expr]
+    /// [ORDER BY col] [PROPERTIES (...)]
+    /// ```
     fn parse_doris_load_data_desc(&mut self) -> Result<DorisLoadDataDesc, ParserError> {
+        let merge_type = if self.parse_keyword(Keyword::MERGE) {
+            Some(DorisLoadMergeType::Merge)
+        } else if self.parse_keyword(Keyword::APPEND) {
+            Some(DorisLoadMergeType::Append)
+        } else if self.parse_keyword(Keyword::DELETE) {
+            Some(DorisLoadMergeType::Delete)
+        } else {
+            None
+        };
         self.expect_keywords(&[Keyword::DATA, Keyword::INFILE])?;
         self.expect_token(&Token::LParen)?;
         let files = self.parse_comma_separated(Parser::parse_literal_string)?;
         self.expect_token(&Token::RParen)?;
+        let negative = self.parse_keyword(Keyword::NEGATIVE);
         self.expect_keywords(&[Keyword::INTO, Keyword::TABLE])?;
         let into_table = self.parse_object_name(false)?;
 
         let mut desc = DorisLoadDataDesc {
+            merge_type,
             files,
+            negative,
             into_table,
+            partition: None,
             columns_terminated_by: None,
             lines_terminated_by: None,
             format_as: None,
+            compress_type_as: None,
             column_list: None,
+            columns_from_path_as: None,
+            set: None,
+            preceding_filter: None,
+            where_clause: None,
+            delete_on: None,
+            order_by: None,
+            properties: vec![],
         };
         loop {
-            if self.parse_keywords(&[Keyword::COLUMNS, Keyword::TERMINATED, Keyword::BY]) {
+            if self.parse_keyword(Keyword::PARTITION) {
+                desc.partition = Some(self.parse_parenthesized_column_list(Mandatory, false)?);
+            } else if self.parse_keywords(&[Keyword::COLUMNS, Keyword::TERMINATED, Keyword::BY]) {
                 desc.columns_terminated_by = Some(self.parse_literal_string()?);
             } else if self.parse_keywords(&[Keyword::LINES, Keyword::TERMINATED, Keyword::BY]) {
                 desc.lines_terminated_by = Some(self.parse_literal_string()?);
             } else if self.parse_keywords(&[Keyword::FORMAT, Keyword::AS]) {
                 desc.format_as = Some(self.parse_literal_string()?);
+            } else if self.parse_keywords(&[Keyword::COMPRESS_TYPE, Keyword::AS]) {
+                desc.compress_type_as = Some(self.parse_literal_string()?);
+            } else if self.parse_keywords(&[
+                Keyword::COLUMNS,
+                Keyword::FROM,
+                Keyword::PATH,
+                Keyword::AS,
+            ]) {
+                desc.columns_from_path_as =
+                    Some(self.parse_parenthesized_column_list(Mandatory, false)?);
+            } else if self.parse_keyword(Keyword::SET) {
+                self.expect_token(&Token::LParen)?;
+                desc.set = Some(self.parse_comma_separated(Parser::parse_assignment)?);
+                self.expect_token(&Token::RParen)?;
+            } else if self.parse_keywords(&[Keyword::PRECEDING, Keyword::FILTER]) {
+                desc.preceding_filter = Some(self.parse_expr()?);
+            } else if self.parse_keyword(Keyword::WHERE) {
+                desc.where_clause = Some(self.parse_expr()?);
+            } else if self.parse_keywords(&[Keyword::DELETE, Keyword::ON]) {
+                desc.delete_on = Some(self.parse_expr()?);
+            } else if self.parse_keywords(&[Keyword::ORDER, Keyword::BY]) {
+                desc.order_by = Some(self.parse_identifier()?);
+            } else if self.peek_keyword(Keyword::PROPERTIES) {
+                desc.properties = self.parse_options(Keyword::PROPERTIES)?;
             } else if self.peek_token().token == Token::LParen {
                 desc.column_list = Some(self.parse_parenthesized_column_list(Mandatory, false)?);
             } else {

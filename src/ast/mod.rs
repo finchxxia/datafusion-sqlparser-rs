@@ -9028,30 +9028,88 @@ pub struct HiveLoadDataFormat {
     pub input_format: Expr,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+/// The merge type prefix of a Doris `data_desc`: `MERGE`, `APPEND`
+/// (the default), or `DELETE`.
+pub enum DorisLoadMergeType {
+    /// `MERGE` — merge the loaded data with existing rows.
+    Merge,
+    /// `APPEND` — append the loaded data.
+    Append,
+    /// `DELETE` — delete the loaded keys.
+    Delete,
+}
+
+impl fmt::Display for DorisLoadMergeType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            DorisLoadMergeType::Merge => "MERGE",
+            DorisLoadMergeType::Append => "APPEND",
+            DorisLoadMergeType::Delete => "DELETE",
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
 /// A `data_desc` item in a Doris `LOAD LABEL` statement:
-/// `DATA INFILE ("path"[, ...]) INTO TABLE t [clauses]`.
+///
+/// ```sql
+/// [MERGE | APPEND | DELETE] DATA INFILE ("path"[, ...]) [NEGATIVE]
+/// INTO TABLE t [PARTITION (p, ...)]
+/// [COLUMNS TERMINATED BY "sep"] [LINES TERMINATED BY "sep"]
+/// [FORMAT AS "fmt"] [COMPRESS_TYPE AS "type"] [(col, ...)]
+/// [COLUMNS FROM PATH AS (c, ...)] [SET (col = expr, ...)]
+/// [PRECEDING FILTER expr] [WHERE expr] [DELETE ON expr]
+/// [ORDER BY col] [PROPERTIES (...)]
+/// ```
 ///
 /// See <https://doris.apache.org/docs/3.x/sql-manual/sql-statements/data-modification/load-and-export/BROKER-LOAD/>
 pub struct DorisLoadDataDesc {
+    /// `MERGE` | `APPEND` | `DELETE` prefix.
+    pub merge_type: Option<DorisLoadMergeType>,
     /// `DATA INFILE` file paths.
     pub files: Vec<String>,
+    /// `NEGATIVE` after the file list.
+    pub negative: bool,
     /// `INTO TABLE` target table.
     pub into_table: ObjectName,
+    /// `PARTITION (p1, ...)` target partitions.
+    pub partition: Option<Vec<Ident>>,
     /// `COLUMNS TERMINATED BY 'sep'`.
     pub columns_terminated_by: Option<String>,
     /// `LINES TERMINATED BY 'sep'`.
     pub lines_terminated_by: Option<String>,
     /// `FORMAT AS 'fmt'`.
     pub format_as: Option<String>,
+    /// `COMPRESS_TYPE AS 'type'`.
+    pub compress_type_as: Option<String>,
     /// Optional `(col, ...)` source column list.
     pub column_list: Option<Vec<Ident>>,
+    /// `COLUMNS FROM PATH AS (c1, ...)`.
+    pub columns_from_path_as: Option<Vec<Ident>>,
+    /// `SET (col = expr, ...)` column mappings.
+    pub set: Option<Vec<Assignment>>,
+    /// `PRECEDING FILTER expr`.
+    pub preceding_filter: Option<Expr>,
+    /// `WHERE expr`.
+    pub where_clause: Option<Expr>,
+    /// `DELETE ON expr`.
+    pub delete_on: Option<Expr>,
+    /// `ORDER BY col`.
+    pub order_by: Option<Ident>,
+    /// `PROPERTIES (...)` on this data desc.
+    pub properties: Vec<SqlOption>,
 }
 
 impl fmt::Display for DorisLoadDataDesc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(merge_type) = &self.merge_type {
+            write!(f, "{merge_type} ")?;
+        }
         f.write_str("DATA INFILE (")?;
         for (i, file) in self.files.iter().enumerate() {
             if i > 0 {
@@ -9059,7 +9117,14 @@ impl fmt::Display for DorisLoadDataDesc {
             }
             write!(f, "'{}'", value::escape_single_quote_string(file))?;
         }
-        write!(f, ") INTO TABLE {}", self.into_table)?;
+        f.write_str(")")?;
+        if self.negative {
+            f.write_str(" NEGATIVE")?;
+        }
+        write!(f, " INTO TABLE {}", self.into_table)?;
+        if let Some(partition) = &self.partition {
+            write!(f, " PARTITION ({})", display_comma_separated(partition))?;
+        }
         if let Some(sep) = &self.columns_terminated_by {
             write!(
                 f,
@@ -9081,8 +9146,44 @@ impl fmt::Display for DorisLoadDataDesc {
                 value::escape_single_quote_string(format)
             )?;
         }
+        if let Some(compress_type) = &self.compress_type_as {
+            write!(
+                f,
+                " COMPRESS_TYPE AS '{}'",
+                value::escape_single_quote_string(compress_type)
+            )?;
+        }
         if let Some(columns) = &self.column_list {
             write!(f, " ({})", display_comma_separated(columns))?;
+        }
+        if let Some(columns) = &self.columns_from_path_as {
+            write!(
+                f,
+                " COLUMNS FROM PATH AS ({})",
+                display_comma_separated(columns)
+            )?;
+        }
+        if let Some(set) = &self.set {
+            write!(f, " SET ({})", display_comma_separated(set))?;
+        }
+        if let Some(filter) = &self.preceding_filter {
+            write!(f, " PRECEDING FILTER {filter}")?;
+        }
+        if let Some(where_clause) = &self.where_clause {
+            write!(f, " WHERE {where_clause}")?;
+        }
+        if let Some(delete_on) = &self.delete_on {
+            write!(f, " DELETE ON {delete_on}")?;
+        }
+        if let Some(order_by) = &self.order_by {
+            write!(f, " ORDER BY {order_by}")?;
+        }
+        if !self.properties.is_empty() {
+            write!(
+                f,
+                " PROPERTIES ({})",
+                display_comma_separated(&self.properties)
+            )?;
         }
         Ok(())
     }
