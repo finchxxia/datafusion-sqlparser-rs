@@ -1850,3 +1850,45 @@ fn doris_alter_table_add_columns_ast_and_errors() {
         "sql parser error: Expected: identifier, found: ("
     );
 }
+
+#[test]
+fn parse_doris_partition_empty_definition_list() {
+    // Doris writes `AUTO PARTITION BY RANGE(...) ()` with an explicit empty
+    // definition list; the `()` must round-trip instead of being dropped.
+    let with_list = doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k DATE, v INT) DUPLICATE KEY(k) AUTO PARTITION BY RANGE(date_trunc(k, 'day')) () DISTRIBUTED BY HASH(k) BUCKETS 3",
+    );
+    let without_list = doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k DATE, v INT) DUPLICATE KEY(k) AUTO PARTITION BY RANGE(date_trunc(k, 'day')) DISTRIBUTED BY HASH(k) BUCKETS 3",
+    );
+
+    fn partitioning(stmt: Statement) -> TablePartitioning {
+        let Statement::CreateTable(CreateTable {
+            table_model:
+                Some(TableModel {
+                    partitioning: Some(partitioning),
+                    ..
+                }),
+            ..
+        }) = stmt
+        else {
+            panic!("Expected CreateTable with partitioning")
+        };
+        partitioning
+    }
+
+    let with_list = partitioning(with_list);
+    assert!(with_list.auto);
+    assert!(with_list.has_partition_list);
+    assert!(with_list.partitions.is_empty());
+
+    let without_list = partitioning(without_list);
+    assert!(without_list.auto);
+    assert!(!without_list.has_partition_list);
+    assert!(without_list.partitions.is_empty());
+
+    // An explicit empty list is preserved without AUTO as well.
+    doris_and_generic().verified_stmt(
+        "CREATE TABLE t (k DATE, v INT) PARTITION BY RANGE(k) () DISTRIBUTED BY HASH(k) BUCKETS 3",
+    );
+}

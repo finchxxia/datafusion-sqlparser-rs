@@ -831,6 +831,7 @@ mod tests {
                     auto: true,
                     kind: TablePartitioningKind::Range,
                     columns: vec![partition_expr],
+                    has_partition_list: true,
                     partitions: vec![TablePartitioningEntry::Definition(
                         TablePartitioningDefinition {
                             if_not_exists: false,

@@ -3269,6 +3269,11 @@ pub struct TablePartitioning {
     pub kind: TablePartitioningKind,
     /// Partition columns/expressions (supports multiple columns).
     pub columns: Vec<Expr>,
+    /// Whether the partition definition list `(...)` was present,
+    /// even when it is empty. Doris `AUTO PARTITION BY RANGE(...)` writes
+    /// an explicit `()`, which carries no definitions but is part of the
+    /// canonical syntax.
+    pub has_partition_list: bool,
     /// Explicit partition definitions.
     pub partitions: Vec<TablePartitioningEntry>,
 }
@@ -3284,7 +3289,7 @@ impl fmt::Display for TablePartitioning {
             self.kind,
             display_comma_separated(&self.columns)
         )?;
-        if !self.partitions.is_empty() {
+        if self.has_partition_list {
             write!(f, " ({})", display_comma_separated(&self.partitions))?;
         }
         Ok(())

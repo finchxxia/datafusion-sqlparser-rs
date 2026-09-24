@@ -10484,7 +10484,8 @@ impl<'a> Parser<'a> {
         let columns = self.parse_comma_separated(Parser::parse_expr)?;
         self.expect_token(&Token::RParen)?;
 
-        let partitions = if self.consume_token(&Token::LParen) {
+        let has_partition_list = self.consume_token(&Token::LParen);
+        let partitions = if has_partition_list {
             let partitions =
                 self.parse_comma_separated0(Parser::parse_doris_partition_entry, Token::RParen)?;
             self.expect_token(&Token::RParen)?;
@@ -10493,11 +10494,12 @@ impl<'a> Parser<'a> {
             vec![]
         };
 
-        // When there are no explicit partition definitions, we must
+        // When there is no explicit partition definition list, we must
         // distinguish Doris `PARTITION BY RANGE(col) DISTRIBUTED BY ...`
         // from PostgreSQL `PARTITION BY RANGE(col)`.  Only commit to the
-        // Doris path when a recognisable Doris follow-up keyword is next.
-        if !auto && partitions.is_empty() {
+        // Doris path when a recognisable Doris follow-up keyword is next;
+        // an explicit `()` is already unambiguous Doris syntax.
+        if !auto && !has_partition_list {
             let is_doris_follow_up = self.peek_keyword(Keyword::DISTRIBUTED)
                 || self.peek_keyword(Keyword::PROPERTIES)
                 || (self.dialect.supports_create_table_rollup_clause()
@@ -10512,6 +10514,7 @@ impl<'a> Parser<'a> {
             auto,
             kind,
             columns,
+            has_partition_list,
             partitions,
         }))
     }
