@@ -2205,3 +2205,96 @@ fn parse_insert_with_label() {
         .parse_sql_statements("INSERT INTO t WITH LABEL l SELECT * FROM t2")
         .is_err());
 }
+
+#[test]
+fn parse_doris_broker_load() {
+    let dialects = all_dialects_where(|d| d.supports_broker_load());
+
+    dialects.verified_stmt(
+        "LOAD LABEL db.label1 (DATA INFILE ('s3://bucket/file.csv') INTO TABLE db.tbl)",
+    );
+    dialects.verified_stmt("LOAD LABEL label1 (DATA INFILE ('a.csv', 'b.csv') INTO TABLE tbl)");
+    dialects
+        .verified_stmt("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t COLUMNS TERMINATED BY ',')");
+    dialects.verified_stmt("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t LINES TERMINATED BY '|')");
+    dialects.verified_stmt("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t FORMAT AS 'parquet')");
+    dialects.verified_stmt("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t (c1, c2))");
+    dialects.verified_stmt(
+        "LOAD LABEL l (DATA INFILE ('f') INTO TABLE t COLUMNS TERMINATED BY '|' FORMAT AS 'csv' (c1, c2))",
+    );
+    dialects.verified_stmt(
+        "LOAD LABEL l (DATA INFILE ('f') INTO TABLE t, DATA INFILE ('g') INTO TABLE t2)",
+    );
+    dialects.verified_stmt("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t) WITH S3 ('k' = 'v')");
+    dialects.verified_stmt("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t) WITH HDFS ('k' = 'v')");
+    dialects.verified_stmt(
+        "LOAD LABEL l (DATA INFILE ('f') INTO TABLE t) WITH BROKER broker1 ('k' = 'v', 'k2' = 'v2')",
+    );
+    dialects.verified_stmt("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t) PROPERTIES ('k' = 'v')");
+    dialects.verified_stmt("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t) COMMENT 'load job'");
+    dialects.verified_stmt(
+        "LOAD LABEL l (DATA INFILE ('f') INTO TABLE t) WITH S3 ('k' = 'v') PROPERTIES ('p' = 'q') COMMENT 'c'",
+    );
+    // Doris documentation uses double-quoted strings.
+    dialects.one_statement_parses_to(
+        r#"LOAD LABEL l (DATA INFILE ("s3://b/f") INTO TABLE t FORMAT AS "parquet")"#,
+        "LOAD LABEL l (DATA INFILE ('s3://b/f') INTO TABLE t FORMAT AS 'parquet')",
+    );
+}
+
+#[test]
+fn ast_doris_broker_load_is_structured() {
+    let sql = "LOAD LABEL db.l (DATA INFILE ('a', 'b') INTO TABLE db.t FORMAT AS 'csv' (c1, c2)) WITH BROKER b1 ('k' = 'v') PROPERTIES ('p' = '1') COMMENT 'c'";
+    let stmt = doris().verified_stmt(sql);
+    let Statement::DorisBrokerLoad {
+        label,
+        data_descs,
+        with,
+        properties,
+        comment,
+    } = stmt
+    else {
+        panic!("expected DorisBrokerLoad")
+    };
+    assert_eq!(label.to_string(), "db.l");
+    assert_eq!(comment.as_deref(), Some("c"));
+    assert_eq!(properties.len(), 1);
+    assert_eq!(data_descs.len(), 1);
+    let desc = &data_descs[0];
+    assert_eq!(desc.files, vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(desc.into_table.to_string(), "db.t");
+    assert_eq!(desc.format_as.as_deref(), Some("csv"));
+    assert_eq!(
+        desc.column_list,
+        Some(vec![Ident::new("c1"), Ident::new("c2")])
+    );
+    let Some(DorisLoadSource::Broker { name, properties }) = with else {
+        panic!("expected WITH BROKER")
+    };
+    assert_eq!(name.value, "b1");
+    assert_eq!(properties.len(), 1);
+}
+
+#[test]
+fn parse_doris_broker_load_negative() {
+    let dialects = all_dialects_where(|d| d.supports_broker_load());
+
+    // Missing the parenthesized data_desc list.
+    assert!(dialects.parse_sql_statements("LOAD LABEL l").is_err());
+    // Missing INTO TABLE in a data_desc.
+    assert!(dialects
+        .parse_sql_statements("LOAD LABEL l (DATA INFILE ('f'))")
+        .is_err());
+    // Empty file list.
+    assert!(dialects
+        .parse_sql_statements("LOAD LABEL l (DATA INFILE () INTO TABLE t)")
+        .is_err());
+    // Unknown source after WITH.
+    assert!(dialects
+        .parse_sql_statements("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t) WITH GCS ('k'='v')")
+        .is_err());
+    // Not enabled for other dialects.
+    assert!(TestedDialects::new(vec![Box::new(GenericDialect {})])
+        .parse_sql_statements("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t)")
+        .is_err());
+}

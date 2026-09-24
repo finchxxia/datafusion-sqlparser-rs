@@ -5066,6 +5066,29 @@ pub enum Statement {
         /// Optional trailing `COMMENT '...'`.
         comment: Option<String>,
     },
+    /// Doris `LOAD LABEL` (Broker Load) statement.
+    ///
+    /// ```sql
+    /// LOAD LABEL [db.]label
+    /// (data_desc[, data_desc ...])
+    /// [WITH {S3 | HDFS | BROKER name} ("k" = "v", ...)]
+    /// [PROPERTIES ("k" = "v", ...)]
+    /// [COMMENT "..."]
+    /// ```
+    ///
+    /// See <https://doris.apache.org/docs/3.x/sql-manual/sql-statements/data-modification/load-and-export/BROKER-LOAD/>
+    DorisBrokerLoad {
+        /// Load label, optionally qualified by database.
+        label: ObjectName,
+        /// Data descriptions inside the parenthesized list.
+        data_descs: Vec<DorisLoadDataDesc>,
+        /// Optional `WITH` storage or broker clause.
+        with: Option<DorisLoadSource>,
+        /// Statement-level `PROPERTIES (...)`.
+        properties: Vec<SqlOption>,
+        /// Optional trailing `COMMENT '...'`.
+        comment: Option<String>,
+    },
     /// ```sql
     /// Rename TABLE tbl_name TO new_tbl_name[, tbl_name2 TO new_tbl_name2] ...
     /// ```
@@ -5749,6 +5772,33 @@ impl fmt::Display for Statement {
                 write!(f, " FROM {data_source}")?;
                 if !data_source_properties.is_empty() {
                     write!(f, " ({})", display_comma_separated(data_source_properties))?;
+                }
+                if let Some(comment) = comment {
+                    write!(
+                        f,
+                        " COMMENT '{}'",
+                        value::escape_single_quote_string(comment)
+                    )?;
+                }
+                Ok(())
+            }
+            Statement::DorisBrokerLoad {
+                label,
+                data_descs,
+                with,
+                properties,
+                comment,
+            } => {
+                write!(
+                    f,
+                    "LOAD LABEL {label} ({})",
+                    display_comma_separated(data_descs)
+                )?;
+                if let Some(with) = with {
+                    write!(f, " {with}")?;
+                }
+                if !properties.is_empty() {
+                    write!(f, " PROPERTIES ({})", display_comma_separated(properties))?;
                 }
                 if let Some(comment) = comment {
                     write!(
@@ -8976,6 +9026,102 @@ pub struct HiveLoadDataFormat {
     pub serde: Expr,
     /// Input format expression.
     pub input_format: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+/// A `data_desc` item in a Doris `LOAD LABEL` statement:
+/// `DATA INFILE ("path"[, ...]) INTO TABLE t [clauses]`.
+///
+/// See <https://doris.apache.org/docs/3.x/sql-manual/sql-statements/data-modification/load-and-export/BROKER-LOAD/>
+pub struct DorisLoadDataDesc {
+    /// `DATA INFILE` file paths.
+    pub files: Vec<String>,
+    /// `INTO TABLE` target table.
+    pub into_table: ObjectName,
+    /// `COLUMNS TERMINATED BY 'sep'`.
+    pub columns_terminated_by: Option<String>,
+    /// `LINES TERMINATED BY 'sep'`.
+    pub lines_terminated_by: Option<String>,
+    /// `FORMAT AS 'fmt'`.
+    pub format_as: Option<String>,
+    /// Optional `(col, ...)` source column list.
+    pub column_list: Option<Vec<Ident>>,
+}
+
+impl fmt::Display for DorisLoadDataDesc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("DATA INFILE (")?;
+        for (i, file) in self.files.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "'{}'", value::escape_single_quote_string(file))?;
+        }
+        write!(f, ") INTO TABLE {}", self.into_table)?;
+        if let Some(sep) = &self.columns_terminated_by {
+            write!(
+                f,
+                " COLUMNS TERMINATED BY '{}'",
+                value::escape_single_quote_string(sep)
+            )?;
+        }
+        if let Some(sep) = &self.lines_terminated_by {
+            write!(
+                f,
+                " LINES TERMINATED BY '{}'",
+                value::escape_single_quote_string(sep)
+            )?;
+        }
+        if let Some(format) = &self.format_as {
+            write!(
+                f,
+                " FORMAT AS '{}'",
+                value::escape_single_quote_string(format)
+            )?;
+        }
+        if let Some(columns) = &self.column_list {
+            write!(f, " ({})", display_comma_separated(columns))?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+/// The `WITH` clause of a Doris `LOAD LABEL` statement.
+pub enum DorisLoadSource {
+    /// `WITH S3 ("k" = "v", ...)`.
+    S3(Vec<SqlOption>),
+    /// `WITH HDFS ("k" = "v", ...)`.
+    Hdfs(Vec<SqlOption>),
+    /// `WITH BROKER name ("k" = "v", ...)`.
+    Broker {
+        /// Broker name.
+        name: Ident,
+        /// Broker properties.
+        properties: Vec<SqlOption>,
+    },
+}
+
+impl fmt::Display for DorisLoadSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DorisLoadSource::S3(properties) => {
+                write!(f, "WITH S3 ({})", display_comma_separated(properties))
+            }
+            DorisLoadSource::Hdfs(properties) => {
+                write!(f, "WITH HDFS ({})", display_comma_separated(properties))
+            }
+            DorisLoadSource::Broker { name, properties } => write!(
+                f,
+                "WITH BROKER {name} ({})",
+                display_comma_separated(properties)
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]

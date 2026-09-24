@@ -21411,6 +21411,8 @@ impl<'a> Parser<'a> {
             } else {
                 self.expected("INFILE or INPATH after LOAD DATA", self.peek_token())
             }
+        } else if self.dialect.supports_broker_load() && self.peek_keyword(Keyword::LABEL) {
+            self.parse_doris_broker_load()
         } else if self.dialect.supports_load_extension() {
             let extension_name = self.parse_identifier()?;
             Ok(Statement::Load { extension_name })
@@ -21419,6 +21421,101 @@ impl<'a> Parser<'a> {
                 "`DATA` or an extension name after `LOAD`",
                 self.peek_token_ref(),
             )
+        }
+    }
+
+    /// Parse a Doris `LOAD LABEL` (Broker Load) statement.
+    ///
+    /// ```sql
+    /// LOAD LABEL [db.]label
+    /// (data_desc[, data_desc ...])
+    /// [WITH {S3 | HDFS | BROKER name} ("k" = "v", ...)]
+    /// [PROPERTIES ("k" = "v", ...)]
+    /// [COMMENT "..."]
+    /// ```
+    ///
+    /// See <https://doris.apache.org/docs/3.x/sql-manual/sql-statements/data-modification/load-and-export/BROKER-LOAD/>
+    fn parse_doris_broker_load(&mut self) -> Result<Statement, ParserError> {
+        self.expect_keyword_is(Keyword::LABEL)?;
+        let label = self.parse_object_name(false)?;
+        self.expect_token(&Token::LParen)?;
+        let data_descs = self.parse_comma_separated(Parser::parse_doris_load_data_desc)?;
+        self.expect_token(&Token::RParen)?;
+
+        let with = if self.parse_keyword(Keyword::WITH) {
+            Some(self.parse_doris_load_source()?)
+        } else {
+            None
+        };
+        let properties = self.parse_options(Keyword::PROPERTIES)?;
+        let comment = if self.parse_keyword(Keyword::COMMENT) {
+            Some(self.parse_literal_string()?)
+        } else {
+            None
+        };
+
+        Ok(Statement::DorisBrokerLoad {
+            label,
+            data_descs,
+            with,
+            properties,
+            comment,
+        })
+    }
+
+    /// Parse a `data_desc` in a Doris `LOAD LABEL` statement:
+    /// `DATA INFILE ("path"[, ...]) INTO TABLE t [clauses]`.
+    fn parse_doris_load_data_desc(&mut self) -> Result<DorisLoadDataDesc, ParserError> {
+        self.expect_keywords(&[Keyword::DATA, Keyword::INFILE])?;
+        self.expect_token(&Token::LParen)?;
+        let files = self.parse_comma_separated(Parser::parse_literal_string)?;
+        self.expect_token(&Token::RParen)?;
+        self.expect_keywords(&[Keyword::INTO, Keyword::TABLE])?;
+        let into_table = self.parse_object_name(false)?;
+
+        let mut desc = DorisLoadDataDesc {
+            files,
+            into_table,
+            columns_terminated_by: None,
+            lines_terminated_by: None,
+            format_as: None,
+            column_list: None,
+        };
+        loop {
+            if self.parse_keywords(&[Keyword::COLUMNS, Keyword::TERMINATED, Keyword::BY]) {
+                desc.columns_terminated_by = Some(self.parse_literal_string()?);
+            } else if self.parse_keywords(&[Keyword::LINES, Keyword::TERMINATED, Keyword::BY]) {
+                desc.lines_terminated_by = Some(self.parse_literal_string()?);
+            } else if self.parse_keywords(&[Keyword::FORMAT, Keyword::AS]) {
+                desc.format_as = Some(self.parse_literal_string()?);
+            } else if self.peek_token().token == Token::LParen {
+                desc.column_list = Some(self.parse_parenthesized_column_list(Mandatory, false)?);
+            } else {
+                break;
+            }
+        }
+        Ok(desc)
+    }
+
+    /// Parse the `WITH` clause of a Doris `LOAD LABEL` statement:
+    /// `WITH {S3 | HDFS | BROKER name} ("k" = "v", ...)`.
+    fn parse_doris_load_source(&mut self) -> Result<DorisLoadSource, ParserError> {
+        fn parse_properties(p: &mut Parser) -> Result<Vec<SqlOption>, ParserError> {
+            p.expect_token(&Token::LParen)?;
+            let properties = p.parse_comma_separated(Parser::parse_sql_option)?;
+            p.expect_token(&Token::RParen)?;
+            Ok(properties)
+        }
+
+        let name = self.parse_identifier()?;
+        match name.value.to_ascii_uppercase().as_str() {
+            "S3" => Ok(DorisLoadSource::S3(parse_properties(self)?)),
+            "HDFS" => Ok(DorisLoadSource::Hdfs(parse_properties(self)?)),
+            "BROKER" => Ok(DorisLoadSource::Broker {
+                name: self.parse_identifier()?,
+                properties: parse_properties(self)?,
+            }),
+            _ => self.expected_at("S3, HDFS or BROKER after `WITH`", self.index - 1),
         }
     }
 

@@ -171,6 +171,10 @@ impl Dialect for DorisDialect {
         true
     }
 
+    fn supports_broker_load(&self) -> bool {
+        true
+    }
+
     fn supports_create_routine_load(&self) -> bool {
         true
     }

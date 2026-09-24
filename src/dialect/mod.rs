@@ -1276,6 +1276,12 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports Doris `LOAD LABEL`
+    /// (Broker Load) statements.
+    fn supports_broker_load(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports Doris `CREATE ROUTINE LOAD`.
     fn supports_create_routine_load(&self) -> bool {
         false
