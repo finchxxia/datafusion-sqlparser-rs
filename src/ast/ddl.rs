@@ -5016,9 +5016,9 @@ pub struct CreateView {
     pub options: CreateTableOptions,
     /// BigQuery: CLUSTER BY columns
     pub cluster_by: Vec<Ident>,
-    /// Snowflake: Views can have comments in Snowflake.
-    /// <https://docs.snowflake.com/en/sql-reference/sql/create-view#syntax>
-    pub comment: Option<String>,
+    /// View comment, e.g. `COMMENT = '...'` (Snowflake) or `COMMENT '...'`
+    /// (Apache Doris).
+    pub comment: Option<CommentDef>,
     /// if true, has RedShift [`WITH NO SCHEMA BINDING`] clause <https://docs.aws.amazon.com/redshift/latest/dg/r_CREATE_VIEW.html>
     pub with_no_schema_binding: bool,
     /// if true, has SQLite `IF NOT EXISTS` clause <https://www.sqlite.org/lang_createview.html>
@@ -5081,7 +5081,14 @@ impl fmt::Display for CreateView {
             write!(f, " {}", self.options)?;
         }
         if let Some(ref comment) = self.comment {
-            write!(f, " COMMENT = '{}'", escape_single_quote_string(comment))?;
+            match comment {
+                CommentDef::WithEq(comment) => {
+                    write!(f, " COMMENT = '{}'", escape_single_quote_string(comment))?;
+                }
+                CommentDef::WithoutEq(comment) => {
+                    write!(f, " COMMENT '{}'", escape_single_quote_string(comment))?;
+                }
+            }
         }
         if !self.cluster_by.is_empty() {
             write!(

@@ -1098,6 +1098,20 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if this dialect supports the `COMMENT` clause in
+    /// `CREATE VIEW` statements using the `COMMENT 'comment'` syntax
+    /// (without `=`).
+    ///
+    /// Example:
+    /// ```sql
+    /// CREATE VIEW v COMMENT 'my comment' AS SELECT 1;
+    /// ```
+    ///
+    /// [Doris](https://doris.apache.org/docs/sql-manual/sql-statements/table-and-view/view/CREATE-VIEW/)
+    fn supports_create_view_comment_without_eq(&self) -> bool {
+        false
+    }
+
     /// Returns true if this dialect supports the `ARRAY` type without
     /// specifying an element type.
     ///

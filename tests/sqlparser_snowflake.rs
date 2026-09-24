@@ -1100,7 +1100,10 @@ fn parse_sf_create_or_replace_with_comment_for_snowflake() {
             assert!(or_replace);
             assert_eq!(cluster_by, vec![]);
             assert!(comment.is_some());
-            assert_eq!(comment.expect("expected comment"), "hello, world");
+            assert_eq!(
+                comment.expect("expected comment"),
+                CommentDef::WithEq("hello, world".to_string())
+            );
             assert!(!late_binding);
             assert!(!if_not_exists);
             assert!(!temporary);

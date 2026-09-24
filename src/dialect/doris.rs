@@ -159,6 +159,10 @@ impl Dialect for DorisDialect {
         true
     }
 
+    fn supports_create_view_comment_without_eq(&self) -> bool {
+        true
+    }
+
     fn supports_column_on_update_option(&self) -> bool {
         true
     }

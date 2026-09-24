@@ -2116,3 +2116,59 @@ fn doris_alter_table_add_partition_ast_and_errors() {
         "sql parser error: Expected: (, found: p1"
     );
 }
+
+#[test]
+fn parse_doris_create_view_comment() {
+    // <https://doris.apache.org/docs/sql-manual/sql-statements/table-and-view/view/CREATE-VIEW/>
+    let dialects = all_dialects_where(|d| d.supports_create_view_comment_without_eq());
+    dialects.verified_stmt("CREATE VIEW v COMMENT 'x' AS SELECT 1");
+    dialects.verified_stmt("CREATE VIEW v (c1, c2) COMMENT 'x' AS SELECT 1, 2");
+    dialects.verified_stmt("CREATE VIEW v (c1 COMMENT 'a', c2) COMMENT 'x' AS SELECT 1, 2");
+    dialects.verified_stmt("CREATE OR REPLACE VIEW IF NOT EXISTS db.v COMMENT 'x' AS SELECT 1");
+    // Double-quoted comments normalize to single-quoted on display.
+    doris().one_statement_parses_to(
+        r#"CREATE OR REPLACE VIEW IF NOT EXISTS db.v COMMENT "x" AS SELECT 1"#,
+        "CREATE OR REPLACE VIEW IF NOT EXISTS db.v COMMENT 'x' AS SELECT 1",
+    );
+}
+
+#[test]
+fn doris_create_view_comment_ast_and_errors() {
+    let dialects = all_dialects_where(|d| d.supports_create_view_comment_without_eq());
+
+    let Statement::CreateView(view) =
+        dialects.verified_stmt("CREATE VIEW v COMMENT 'hello' AS SELECT 1")
+    else {
+        panic!("Expected CREATE VIEW")
+    };
+    assert_eq!(
+        view.comment,
+        Some(CommentDef::WithoutEq("hello".to_string()))
+    );
+
+    for (sql, expected) in [
+        (
+            "CREATE VIEW v COMMENT AS SELECT 1",
+            "Expected: string literal, found: AS",
+        ),
+        (
+            "CREATE VIEW v COMMENT = 'x' AS SELECT 1",
+            "Expected: string literal, found: =",
+        ),
+        ("CREATE VIEW v COMMENT 'x'", "Expected: AS, found: EOF"),
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql).unwrap_err().to_string(),
+            format!("sql parser error: {expected}")
+        );
+    }
+
+    assert_eq!(
+        all_dialects_where(|d| !d.supports_create_view_comment_without_eq()
+            && !d.supports_create_view_comment_syntax())
+        .parse_sql_statements("CREATE VIEW v COMMENT 'x' AS SELECT 1")
+        .unwrap_err()
+        .to_string(),
+        "sql parser error: Expected: AS, found: COMMENT"
+    );
+}

@@ -6956,7 +6956,11 @@ impl<'a> Parser<'a> {
             && self.parse_keyword(Keyword::COMMENT)
         {
             self.expect_token(&Token::Eq)?;
-            Some(self.parse_comment_value()?)
+            Some(CommentDef::WithEq(self.parse_comment_value()?))
+        } else if self.dialect.supports_create_view_comment_without_eq()
+            && self.parse_keyword(Keyword::COMMENT)
+        {
+            Some(CommentDef::WithoutEq(self.parse_comment_value()?))
         } else {
             None
         };
