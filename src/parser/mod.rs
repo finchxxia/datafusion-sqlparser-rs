@@ -11479,6 +11479,24 @@ impl<'a> Parser<'a> {
             } else {
                 let if_not_exists =
                     self.parse_keywords(&[Keyword::IF, Keyword::NOT, Keyword::EXISTS]);
+                // Doris: `ADD [TEMPORARY] PARTITION <def> [DISTRIBUTED BY ...]`.
+                // `PARTITION (` keeps the Hive-style `PARTITION (col = val)` path.
+                let temporary = self.dialect.supports_alter_table_add_partition()
+                    && self.parse_keyword(Keyword::TEMPORARY);
+                if temporary
+                    || (self.dialect.supports_alter_table_add_partition()
+                        && self.peek_keyword(Keyword::PARTITION)
+                        && self.peek_nth_token_ref(1).token != Token::LParen)
+                {
+                    let mut definition = self.parse_doris_partition_definition()?;
+                    definition.if_not_exists |= if_not_exists;
+                    let distribution = self.parse_optional_doris_distribution()?;
+                    return Ok(AlterTableOperation::AddDorisPartition {
+                        temporary,
+                        definition,
+                        distribution,
+                    });
+                }
                 let mut new_partitions = vec![];
                 loop {
                     if self.parse_keyword(Keyword::PARTITION) {

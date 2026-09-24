@@ -426,6 +426,17 @@ pub enum AlterTableOperation {
         /// MySQL-specific column position (`FIRST`/`AFTER`).
         column_position: Option<MySQLColumnPosition>,
     },
+    /// `ADD [TEMPORARY] PARTITION <definition> [DISTRIBUTED BY ...]`
+    ///
+    /// Note: this is an Apache Doris-specific operation.
+    AddDorisPartition {
+        /// Whether `TEMPORARY` was specified.
+        temporary: bool,
+        /// The `PARTITION [IF NOT EXISTS] <name> <values>` definition.
+        definition: TablePartitioningDefinition,
+        /// Optional `DISTRIBUTED BY HASH|RANDOM ...` clause.
+        distribution: Option<TableDistribution>,
+    },
     /// `MODIFY PARTITION <name>|(<names>)|(*) SET (...)`
     ModifyPartition {
         /// Named partition, parenthesized list, or parenthesized wildcard.
@@ -1006,6 +1017,21 @@ impl fmt::Display for AlterTableOperation {
                     write!(f, " {position}")?;
                 }
 
+                Ok(())
+            }
+            AlterTableOperation::AddDorisPartition {
+                temporary,
+                definition,
+                distribution,
+            } => {
+                write!(f, "ADD ")?;
+                if *temporary {
+                    write!(f, "TEMPORARY ")?;
+                }
+                write!(f, "{definition}")?;
+                if let Some(distribution) = distribution {
+                    write!(f, " {distribution}")?;
+                }
                 Ok(())
             }
             AlterTableOperation::ModifyPartition {

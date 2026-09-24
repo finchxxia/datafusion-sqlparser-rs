@@ -1345,6 +1345,13 @@ impl Spanned for AlterTableOperation {
                     .chain(core::iter::once(new_name.span))
                     .chain(options.iter().map(|i| i.span())),
             ),
+            AlterTableOperation::AddDorisPartition {
+                temporary: _,
+                definition,
+                distribution,
+            } => union_spans(
+                core::iter::once(definition.span()).chain(distribution.iter().map(|d| d.span())),
+            ),
             AlterTableOperation::ModifyPartition {
                 partition,
                 properties,

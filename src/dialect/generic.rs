@@ -225,6 +225,10 @@ impl Dialect for GenericDialect {
         true
     }
 
+    fn supports_alter_table_add_partition(&self) -> bool {
+        true
+    }
+
     fn supports_create_table_properties_clause(&self) -> bool {
         true
     }

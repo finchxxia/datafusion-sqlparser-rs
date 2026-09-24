@@ -1382,6 +1382,13 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Supports `ADD [TEMPORARY] PARTITION <definition> [DISTRIBUTED BY ...]`,
+    /// where `<definition>` is `PARTITION [IF NOT EXISTS] <name> <values>`,
+    /// for example Apache Doris.
+    fn supports_alter_table_add_partition(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports a `PROPERTIES (...)` clause in
     /// `CREATE TABLE`.
     fn supports_create_table_properties_clause(&self) -> bool {

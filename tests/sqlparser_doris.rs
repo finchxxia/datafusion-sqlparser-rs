@@ -2020,3 +2020,99 @@ fn doris_alter_table_rename_ast_and_errors() {
         "sql parser error: Expected: TO, found: p1"
     );
 }
+
+#[test]
+fn parse_doris_alter_table_add_partition() {
+    // <https://doris.apache.org/docs/sql-manual/sql-statements/table-and-view/table/ALTER-TABLE-PARTITION/>
+    let dialects = all_dialects_where(|d| d.supports_alter_table_add_partition());
+    // Double-quoted literals are strings in Doris but identifiers elsewhere.
+    doris().verified_stmt(
+        r#"ALTER TABLE example_db.my_table ADD PARTITION p1 VALUES LESS THAN ("2014-01-01")"#,
+    );
+    doris().verified_stmt(
+        r#"ALTER TABLE example_db.my_table ADD PARTITION p1 VALUES [("2014-01-01"), ("2014-02-01"))"#,
+    );
+    dialects.verified_stmt(
+        "ALTER TABLE example_db.my_table ADD PARTITION p1 VALUES LESS THAN ('2015-01-01') DISTRIBUTED BY HASH(k1) BUCKETS 20",
+    );
+    dialects.verified_stmt("ALTER TABLE t ADD PARTITION p1 VALUES IN (('Beijing'), ('Shanghai'))");
+    dialects.one_statement_parses_to(
+        "ALTER TABLE t ADD PARTITION IF NOT EXISTS p1 VALUES LESS THAN (MAXVALUE)",
+        "ALTER TABLE t ADD PARTITION IF NOT EXISTS p1 VALUES LESS THAN MAXVALUE",
+    );
+    dialects.verified_stmt(
+        "ALTER TABLE t ADD PARTITION p1 VALUES LESS THAN ('2024-01-01') PROPERTIES ('replication_num' = '1')",
+    );
+    dialects.verified_stmt("ALTER TABLE t ADD TEMPORARY PARTITION tp1 VALUES LESS THAN ('x')");
+    // Bare `("k" = "v")` properties normalize to `PROPERTIES (...)`, matching
+    // CREATE TABLE partition definitions.
+    doris().one_statement_parses_to(
+        r#"ALTER TABLE t ADD PARTITION p1 VALUES LESS THAN ("2015-01-01") ("replication_num"="1")"#,
+        r#"ALTER TABLE t ADD PARTITION p1 VALUES LESS THAN ("2015-01-01") PROPERTIES ("replication_num" = "1")"#,
+    );
+    // A default partition has no VALUES clause.
+    dialects.one_statement_parses_to(
+        "ALTER TABLE t ADD PARTITION p1",
+        "ALTER TABLE t ADD PARTITION p1 VALUES IN ()",
+    );
+    // The Hive-style `ADD PARTITION (col = val)` path still works.
+    dialects.verified_stmt("ALTER TABLE t ADD PARTITION (dt = '2024-01-01')");
+}
+
+#[test]
+fn doris_alter_table_add_partition_ast_and_errors() {
+    let dialects = all_dialects_where(|d| d.supports_alter_table_add_partition());
+
+    let Statement::AlterTable(table) = dialects.verified_stmt(
+        "ALTER TABLE t ADD TEMPORARY PARTITION IF NOT EXISTS tp1 VALUES LESS THAN ('x') DISTRIBUTED BY RANDOM BUCKETS 4",
+    ) else {
+        panic!("Expected ALTER TABLE")
+    };
+    let AlterTableOperation::AddDorisPartition {
+        temporary,
+        definition,
+        distribution,
+    } = &table.operations[0]
+    else {
+        panic!("Expected ADD PARTITION")
+    };
+    assert!(temporary);
+    assert!(definition.if_not_exists);
+    assert_eq!(definition.name, Ident::new("tp1"));
+    assert!(matches!(
+        definition.values,
+        TablePartitioningValues::LessThan(_)
+    ));
+    assert!(matches!(
+        distribution,
+        Some(TableDistribution::Random { .. })
+    ));
+
+    for (sql, expected) in [
+        (
+            "ALTER TABLE t ADD PARTITION p1 VALUES LESS THAN",
+            "Expected: (, found: EOF",
+        ),
+        (
+            "ALTER TABLE t ADD TEMPORARY",
+            "Expected: PARTITION, found: EOF",
+        ),
+        (
+            "ALTER TABLE t ADD PARTITION p1 VALUES LESS THAN ('x') DISTRIBUTED BY",
+            "Expected: HASH or RANDOM after DISTRIBUTED BY, found: EOF",
+        ),
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql).unwrap_err().to_string(),
+            format!("sql parser error: {expected}")
+        );
+    }
+
+    assert_eq!(
+        all_dialects_where(|d| !d.supports_alter_table_add_partition())
+            .parse_sql_statements("ALTER TABLE t ADD PARTITION p1 VALUES LESS THAN ('x')")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: (, found: p1"
+    );
+}
