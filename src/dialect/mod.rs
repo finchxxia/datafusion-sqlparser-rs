@@ -1375,6 +1375,13 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Supports `RENAME` operations without `TO`, for example Apache Doris:
+    /// `RENAME <new_table>`, `RENAME PARTITION <old> <new>` and
+    /// `RENAME ROLLUP <old> <new>`.
+    fn supports_alter_table_rename_without_to(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports a `PROPERTIES (...)` clause in
     /// `CREATE TABLE`.
     fn supports_create_table_properties_clause(&self) -> bool {

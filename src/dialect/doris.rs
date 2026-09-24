@@ -99,6 +99,10 @@ impl Dialect for DorisDialect {
         true
     }
 
+    fn supports_alter_table_rename_without_to(&self) -> bool {
+        true
+    }
+
     fn supports_create_table_properties_clause(&self) -> bool {
         true
     }

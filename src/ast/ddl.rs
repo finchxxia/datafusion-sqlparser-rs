@@ -394,6 +394,24 @@ pub enum AlterTableOperation {
         /// The new table name or renaming kind.
         table_name: RenameTableNameKind,
     },
+    /// `RENAME PARTITION <old_name> <new_name>`
+    ///
+    /// Note: this is an Apache Doris-specific operation.
+    RenamePartition {
+        /// Existing partition name to rename.
+        old_name: Ident,
+        /// New partition name.
+        new_name: Ident,
+    },
+    /// `RENAME ROLLUP <old_name> <new_name>`
+    ///
+    /// Note: this is an Apache Doris-specific operation.
+    RenameRollup {
+        /// Existing rollup index name to rename.
+        old_name: Ident,
+        /// New rollup index name.
+        new_name: Ident,
+    },
     // CHANGE [ COLUMN ] <old_name> <new_name> <data_type> [ <options> ]
     /// Change an existing column's name, type, and options.
     ChangeColumn {
@@ -966,6 +984,12 @@ impl fmt::Display for AlterTableOperation {
             } => write!(f, "RENAME COLUMN {old_column_name} TO {new_column_name}"),
             AlterTableOperation::RenameTable { table_name } => {
                 write!(f, "RENAME {table_name}")
+            }
+            AlterTableOperation::RenamePartition { old_name, new_name } => {
+                write!(f, "RENAME PARTITION {old_name} {new_name}")
+            }
+            AlterTableOperation::RenameRollup { old_name, new_name } => {
+                write!(f, "RENAME ROLLUP {old_name} {new_name}")
             }
             AlterTableOperation::ChangeColumn {
                 old_name,
@@ -4503,6 +4527,8 @@ pub enum RenameTableNameKind {
     As(ObjectName),
     /// `TO new_table_name`
     To(ObjectName),
+    /// `new_table_name`, without `TO`/`AS` (e.g. Apache Doris).
+    Bare(ObjectName),
 }
 
 impl fmt::Display for RenameTableNameKind {
@@ -4510,6 +4536,7 @@ impl fmt::Display for RenameTableNameKind {
         match self {
             RenameTableNameKind::As(name) => write!(f, "AS {name}"),
             RenameTableNameKind::To(name) => write!(f, "TO {name}"),
+            RenameTableNameKind::Bare(name) => write!(f, "{name}"),
         }
     }
 }
@@ -4545,8 +4572,9 @@ impl fmt::Display for AlterSchema {
 impl Spanned for RenameTableNameKind {
     fn span(&self) -> Span {
         match self {
-            RenameTableNameKind::As(name) => name.span(),
-            RenameTableNameKind::To(name) => name.span(),
+            RenameTableNameKind::As(name)
+            | RenameTableNameKind::To(name)
+            | RenameTableNameKind::Bare(name) => name.span(),
         }
     }
 }

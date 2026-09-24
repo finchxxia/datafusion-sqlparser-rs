@@ -11541,14 +11541,33 @@ impl<'a> Parser<'a> {
                 AlterTableOperation::RenameTable {
                     table_name: RenameTableNameKind::As(table_name),
                 }
+            } else if self.dialect.supports_alter_table_rename_without_to()
+                && self.parse_keyword(Keyword::PARTITION)
+            {
+                let old_name = self.parse_identifier()?;
+                let new_name = self.parse_identifier()?;
+                AlterTableOperation::RenamePartition { old_name, new_name }
+            } else if self.dialect.supports_alter_table_rename_without_to()
+                && self.parse_keyword(Keyword::ROLLUP)
+            {
+                let old_name = self.parse_identifier()?;
+                let new_name = self.parse_identifier()?;
+                AlterTableOperation::RenameRollup { old_name, new_name }
             } else {
-                let _ = self.parse_keyword(Keyword::COLUMN); // [ COLUMN ]
-                let old_column_name = self.parse_identifier()?;
-                self.expect_keyword_is(Keyword::TO)?;
-                let new_column_name = self.parse_identifier()?;
-                AlterTableOperation::RenameColumn {
-                    old_column_name,
-                    new_column_name,
+                let column_keyword = self.parse_keyword(Keyword::COLUMN); // [ COLUMN ]
+                if self.dialect.supports_alter_table_rename_without_to() && !column_keyword {
+                    let table_name = self.parse_object_name(false)?;
+                    AlterTableOperation::RenameTable {
+                        table_name: RenameTableNameKind::Bare(table_name),
+                    }
+                } else {
+                    let old_column_name = self.parse_identifier()?;
+                    self.expect_keyword_is(Keyword::TO)?;
+                    let new_column_name = self.parse_identifier()?;
+                    AlterTableOperation::RenameColumn {
+                        old_column_name,
+                        new_column_name,
+                    }
                 }
             }
         } else if self.parse_keyword(Keyword::DISABLE) {

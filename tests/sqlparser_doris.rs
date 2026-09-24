@@ -1932,3 +1932,91 @@ fn parse_doris_create_external_table() {
         "sql parser error: Expected: end of statement, found: ENGINE"
     );
 }
+
+#[test]
+fn parse_doris_alter_table_rename() {
+    // <https://doris.apache.org/docs/sql-manual/sql-statements/table-and-view/table/ALTER-TABLE-RENAME/>
+    let dialects = all_dialects_where(|d| d.supports_alter_table_rename_without_to());
+    dialects.verified_stmt("ALTER TABLE table1 RENAME table2");
+    dialects.verified_stmt("ALTER TABLE example_table RENAME PARTITION p1 p2");
+    dialects.verified_stmt("ALTER TABLE example_table RENAME ROLLUP rollup1 rollup2");
+    // The existing `RENAME TO`/`AS`/`COLUMN` forms keep working.
+    dialects.verified_stmt("ALTER TABLE t RENAME TO t2");
+    dialects.verified_stmt("ALTER TABLE t RENAME AS t2");
+    dialects.verified_stmt("ALTER TABLE t RENAME COLUMN c1 TO c2");
+}
+
+#[test]
+fn doris_alter_table_rename_ast_and_errors() {
+    let dialects = all_dialects_where(|d| d.supports_alter_table_rename_without_to());
+
+    let Statement::AlterTable(table) = dialects.verified_stmt("ALTER TABLE t RENAME t2") else {
+        panic!("Expected ALTER TABLE")
+    };
+    assert_eq!(
+        table.operations[0],
+        AlterTableOperation::RenameTable {
+            table_name: RenameTableNameKind::Bare(ObjectName::from(vec![Ident::new("t2")])),
+        }
+    );
+
+    let Statement::AlterTable(table) =
+        dialects.verified_stmt("ALTER TABLE t RENAME PARTITION p1 p2")
+    else {
+        panic!("Expected ALTER TABLE")
+    };
+    assert_eq!(
+        table.operations[0],
+        AlterTableOperation::RenamePartition {
+            old_name: Ident::new("p1"),
+            new_name: Ident::new("p2"),
+        }
+    );
+
+    let Statement::AlterTable(table) = dialects.verified_stmt("ALTER TABLE t RENAME ROLLUP r1 r2")
+    else {
+        panic!("Expected ALTER TABLE")
+    };
+    assert_eq!(
+        table.operations[0],
+        AlterTableOperation::RenameRollup {
+            old_name: Ident::new("r1"),
+            new_name: Ident::new("r2"),
+        }
+    );
+
+    for (sql, expected) in [
+        (
+            "ALTER TABLE t RENAME PARTITION",
+            "Expected: identifier, found: EOF",
+        ),
+        (
+            "ALTER TABLE t RENAME PARTITION p1",
+            "Expected: identifier, found: EOF",
+        ),
+        (
+            "ALTER TABLE t RENAME ROLLUP r1",
+            "Expected: identifier, found: EOF",
+        ),
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql).unwrap_err().to_string(),
+            format!("sql parser error: {expected}")
+        );
+    }
+
+    assert_eq!(
+        all_dialects_where(|d| !d.supports_alter_table_rename_without_to())
+            .parse_sql_statements("ALTER TABLE t RENAME t2")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: TO, found: EOF"
+    );
+    assert_eq!(
+        all_dialects_where(|d| !d.supports_alter_table_rename_without_to())
+            .parse_sql_statements("ALTER TABLE t RENAME PARTITION p1 p2")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: TO, found: p1"
+    );
+}

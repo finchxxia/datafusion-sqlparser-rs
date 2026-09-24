@@ -1330,6 +1330,10 @@ impl Spanned for AlterTableOperation {
                 new_column_name,
             } => old_column_name.span.union(&new_column_name.span),
             AlterTableOperation::RenameTable { table_name } => table_name.span(),
+            AlterTableOperation::RenamePartition { old_name, new_name }
+            | AlterTableOperation::RenameRollup { old_name, new_name } => {
+                old_name.span.union(&new_name.span)
+            }
             AlterTableOperation::ChangeColumn {
                 old_name,
                 new_name,
