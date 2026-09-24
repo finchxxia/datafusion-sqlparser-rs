@@ -580,6 +580,7 @@ define_keywords!(
     KEYS,
     KEY_BLOCK_SIZE,
     KILL,
+    LABEL,
     LAG,
     LAMBDA,
     LANGUAGE,

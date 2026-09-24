@@ -1508,6 +1508,7 @@ impl Spanned for Insert {
             overwrite: _, // bool
             source,
             partitioned,
+            label,
             after_columns,
             has_table_keyword: _, // bool
             on,
@@ -1534,6 +1535,7 @@ impl Spanned for Insert {
                 .chain(source.as_ref().map(|q| q.span()))
                 .chain(assignments.iter().map(|i| i.span()))
                 .chain(partitioned.iter().flat_map(|i| i.iter().map(|k| k.span())))
+                .chain(label.iter().map(|i| i.span))
                 .chain(after_columns.iter().map(|i| i.span))
                 .chain(on.as_ref().map(|i| i.span()))
                 .chain(returning.iter().flat_map(|i| i.iter().map(|k| k.span())))

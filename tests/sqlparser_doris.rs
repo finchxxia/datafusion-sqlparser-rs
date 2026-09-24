@@ -2172,3 +2172,36 @@ fn doris_create_view_comment_ast_and_errors() {
         "sql parser error: Expected: AS, found: COMMENT"
     );
 }
+
+#[test]
+fn parse_insert_with_label() {
+    let dialects = all_dialects_where(|d| d.supports_insert_with_label());
+
+    dialects.verified_stmt("INSERT INTO t WITH LABEL l SELECT * FROM t2");
+    dialects.verified_stmt("INSERT INTO t WITH LABEL l (c1, c2) SELECT * FROM t2");
+    dialects.verified_stmt("INSERT OVERWRITE TABLE t WITH LABEL `l` (c1) SELECT * FROM t2");
+    dialects.verified_stmt("INSERT INTO t PARTITION (p1, p2) WITH LABEL `l` SELECT * FROM t2");
+    dialects.verified_stmt("INSERT INTO t WITH LABEL l (c1) VALUES (1)");
+    // A column list before the label is normalized to after it.
+    dialects.one_statement_parses_to(
+        "INSERT INTO t (c1) WITH LABEL l SELECT * FROM t2",
+        "INSERT INTO t WITH LABEL l (c1) SELECT * FROM t2",
+    );
+    // A `WITH` not followed by `LABEL` still starts a CTE in the source query.
+    dialects.verified_stmt("INSERT INTO t WITH cte AS (SELECT 1) SELECT * FROM cte");
+
+    let Statement::Insert(Insert { label, columns, .. }) =
+        dialects.verified_stmt("INSERT INTO t WITH LABEL l (c1) SELECT * FROM t2")
+    else {
+        panic!("expected INSERT")
+    };
+    assert_eq!(label, Some(Ident::new("l")));
+    assert_eq!(columns, vec![ObjectName::from(Ident::new("c1"))]);
+
+    assert!(dialects
+        .parse_sql_statements("INSERT INTO t WITH LABEL SELECT * FROM t2")
+        .is_err());
+    assert!(TestedDialects::new(vec![Box::new(GenericDialect {})])
+        .parse_sql_statements("INSERT INTO t WITH LABEL l SELECT * FROM t2")
+        .is_err());
+}

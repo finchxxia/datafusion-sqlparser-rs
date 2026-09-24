@@ -1564,6 +1564,15 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if this dialect supports a `WITH LABEL <label>` clause
+    /// between the table name and the column list or source query of an
+    /// `INSERT` statement.
+    ///
+    /// [Doris](https://doris.apache.org/docs/sql-manual/sql-statements/data-modification/DML/INSERT/)
+    fn supports_insert_with_label(&self) -> bool {
+        false
+    }
+
     /// Returns true if this dialect supports Databricks-style
     /// `INSERT ... REPLACE { WHERE | USING | ON }` clauses.
     ///

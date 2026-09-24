@@ -89,6 +89,10 @@ pub struct Insert {
     pub assignments: Vec<Assignment>,
     /// partitioned insert (Hive)
     pub partitioned: Option<Vec<Expr>>,
+    /// `WITH LABEL <label>` clause.
+    ///
+    /// [Doris](https://doris.apache.org/docs/sql-manual/sql-statements/data-modification/DML/INSERT/)
+    pub label: Option<Ident>,
     /// Columns defined after PARTITION
     pub after_columns: Vec<Ident>,
     /// whether the insert has the table keyword (Hive)
@@ -255,7 +259,7 @@ impl Display for Insert {
             }
         }
 
-        if !self.columns.is_empty() {
+        if self.label.is_none() && !self.columns.is_empty() {
             write!(f, "({})", display_comma_separated(&self.columns))?;
             SpaceOrNewline.fmt(f)?;
         }
@@ -270,6 +274,15 @@ impl Display for Insert {
         if let Some(ref parts) = self.partitioned {
             if !parts.is_empty() {
                 write!(f, "PARTITION ({})", display_comma_separated(parts))?;
+                SpaceOrNewline.fmt(f)?;
+            }
+        }
+
+        if let Some(label) = &self.label {
+            write!(f, "WITH LABEL {label}")?;
+            SpaceOrNewline.fmt(f)?;
+            if !self.columns.is_empty() {
+                write!(f, "({})", display_comma_separated(&self.columns))?;
                 SpaceOrNewline.fmt(f)?;
             }
         }

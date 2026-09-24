@@ -19507,12 +19507,13 @@ impl<'a> Parser<'a> {
 
             let mut by_name = false;
             let mut insert_replace = None;
+            let mut label = None;
             let (columns, partitioned, after_columns, output, source, assignments) = if self
                 .parse_keywords(&[Keyword::DEFAULT, Keyword::VALUES])
             {
                 (vec![], None, vec![], None, None, vec![])
             } else {
-                let (columns, partitioned, after_columns) = if !self.peek_subquery_start() {
+                let (mut columns, partitioned, after_columns) = if !self.peek_subquery_start() {
                     let columns =
                         self.parse_parenthesized_qualified_column_list(Optional, is_mysql)?;
 
@@ -19528,6 +19529,19 @@ impl<'a> Parser<'a> {
                 } else {
                     Default::default()
                 };
+
+                // In Doris, `WITH LABEL` after the table belongs to the INSERT
+                // and precedes the column list; a bare `WITH` starts a CTE.
+                if self.dialect.supports_insert_with_label()
+                    && self.peek_keywords(&[Keyword::WITH, Keyword::LABEL])
+                {
+                    self.expect_keywords(&[Keyword::WITH, Keyword::LABEL])?;
+                    label = Some(self.parse_identifier()?);
+                    if columns.is_empty() {
+                        columns =
+                            self.parse_parenthesized_qualified_column_list(Optional, is_mysql)?;
+                    }
+                }
 
                 if table_alias.is_none() {
                     table_alias = self.maybe_parse_insert_replace_target_alias()?;
@@ -19655,6 +19669,7 @@ impl<'a> Parser<'a> {
                 by_name,
                 insert_replace,
                 partitioned,
+                label,
                 columns,
                 after_columns,
                 source,

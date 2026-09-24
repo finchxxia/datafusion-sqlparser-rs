@@ -178,4 +178,8 @@ impl Dialect for DorisDialect {
     fn supports_create_external_table_model_clauses(&self) -> bool {
         true
     }
+
+    fn supports_insert_with_label(&self) -> bool {
+        true
+    }
 }
