@@ -162,4 +162,8 @@ impl Dialect for DorisDialect {
     fn supports_create_routine_load(&self) -> bool {
         true
     }
+
+    fn supports_create_external_table_model_clauses(&self) -> bool {
+        true
+    }
 }

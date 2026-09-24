@@ -6757,6 +6757,21 @@ impl<'a> Parser<'a> {
         let table_name = self.parse_object_name(false)?;
         let (columns, constraints) = self.parse_columns()?;
 
+        // Apache Doris external tables take table model clauses
+        // (`ENGINE = <type>` etc.) instead of Hive clauses.
+        let table_model = if self.dialect.supports_create_external_table_model_clauses() {
+            TableModelClauses {
+                engine: self.parse_optional_doris_engine()?,
+                comment: self.parse_optional_doris_table_comment()?,
+                properties: self.parse_optional_doris_properties()?,
+                broker_properties: self.parse_optional_doris_broker_properties()?,
+                ..Default::default()
+            }
+            .into_table_model()
+        } else {
+            None
+        };
+
         let hive_distribution = self.parse_hive_distribution()?;
         let hive_formats = self.parse_hive_formats()?;
 
@@ -6799,6 +6814,7 @@ impl<'a> Parser<'a> {
             .external(true)
             .file_format(file_format)
             .location(location)
+            .table_model(table_model)
             .build())
     }
 

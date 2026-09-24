@@ -1393,6 +1393,15 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if `CREATE EXTERNAL TABLE` accepts the table model
+    /// clauses `ENGINE = <type>`, `COMMENT '...'`, `PROPERTIES (...)` and
+    /// `BROKER PROPERTIES (...)`, for example Apache Doris external tables.
+    /// `PROPERTIES`/`BROKER PROPERTIES` still honor their own
+    /// `CREATE TABLE` clause gates.
+    fn supports_create_external_table_model_clauses(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports a `CREATE TABLE` column list made
     /// of bare identifiers without data types, used by CTAS column lists such
     /// as `CREATE TABLE t (a, b) AS SELECT ...` in Apache Doris.

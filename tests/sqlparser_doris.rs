@@ -1892,3 +1892,43 @@ fn parse_doris_partition_empty_definition_list() {
         "CREATE TABLE t (k DATE, v INT) PARTITION BY RANGE(k) () DISTRIBUTED BY HASH(k) BUCKETS 3",
     );
 }
+
+#[test]
+fn parse_doris_create_external_table() {
+    doris().verified_stmt(
+        r#"CREATE EXTERNAL TABLE t (k INT) ENGINE = MYSQL PROPERTIES ("host" = "127.0.0.1")"#,
+    );
+    doris().verified_stmt(
+        "CREATE EXTERNAL TABLE IF NOT EXISTS db.t (k INT) ENGINE = HIVE COMMENT 'c' PROPERTIES ('k' = 'v')",
+    );
+    doris().verified_stmt(
+        "CREATE EXTERNAL TABLE t (k INT) ENGINE = BROKER BROKER PROPERTIES ('broker_name' = 'hdfs')",
+    );
+    // Properties alone, and no table model clauses at all.
+    doris().verified_stmt("CREATE EXTERNAL TABLE t (k INT) PROPERTIES ('k' = 'v')");
+    doris().verified_stmt("CREATE EXTERNAL TABLE t (k INT)");
+
+    let stmt = doris()
+        .verified_stmt("CREATE EXTERNAL TABLE t (k INT) ENGINE = MYSQL PROPERTIES ('h' = '1')");
+    match stmt {
+        Statement::CreateTable(CreateTable {
+            external,
+            table_model: Some(model),
+            ..
+        }) => {
+            assert!(external);
+            assert_eq!(model.engine, Some(Ident::new("MYSQL")));
+            assert_eq!(model.properties.len(), 1);
+        }
+        _ => panic!("Expected CreateTable"),
+    }
+
+    // Dialects without the gate still reject a trailing ENGINE clause.
+    assert_eq!(
+        all_dialects_where(|d| !d.supports_create_external_table_model_clauses())
+            .parse_sql_statements("CREATE EXTERNAL TABLE t (k INT) ENGINE = MYSQL")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: end of statement, found: ENGINE"
+    );
+}
