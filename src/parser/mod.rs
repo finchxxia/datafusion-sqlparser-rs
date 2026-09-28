@@ -21569,7 +21569,12 @@ impl<'a> Parser<'a> {
             "HDFS" => Ok(DorisLoadSource::Hdfs(parse_properties(self)?)),
             "BROKER" => Ok(DorisLoadSource::Broker {
                 name: self.parse_identifier()?,
-                properties: parse_properties(self)?,
+                // `WITH BROKER name` may omit the property list.
+                properties: if self.peek_token() == Token::LParen {
+                    parse_properties(self)?
+                } else {
+                    vec![]
+                },
             }),
             _ => self.expected_at("S3, HDFS or BROKER after `WITH`", self.index - 1),
         }

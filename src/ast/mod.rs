@@ -9216,11 +9216,13 @@ impl fmt::Display for DorisLoadSource {
             DorisLoadSource::Hdfs(properties) => {
                 write!(f, "WITH HDFS ({})", display_comma_separated(properties))
             }
-            DorisLoadSource::Broker { name, properties } => write!(
-                f,
-                "WITH BROKER {name} ({})",
-                display_comma_separated(properties)
-            ),
+            DorisLoadSource::Broker { name, properties } => {
+                write!(f, "WITH BROKER {name}")?;
+                if !properties.is_empty() {
+                    write!(f, " ({})", display_comma_separated(properties))?;
+                }
+                Ok(())
+            }
         }
     }
 }

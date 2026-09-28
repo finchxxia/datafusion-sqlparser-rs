@@ -2230,6 +2230,8 @@ fn parse_doris_broker_load() {
     dialects.verified_stmt(
         "LOAD LABEL l (DATA INFILE ('f') INTO TABLE t) WITH BROKER broker1 ('k' = 'v', 'k2' = 'v2')",
     );
+    // Broker properties are optional.
+    dialects.verified_stmt("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t) WITH BROKER broker1");
     dialects.verified_stmt("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t) PROPERTIES ('k' = 'v')");
     dialects.verified_stmt("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t) COMMENT 'load job'");
     dialects.verified_stmt(
