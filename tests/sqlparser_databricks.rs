@@ -1020,3 +1020,231 @@ fn parse_set_session_variable() {
         other => panic!("expected config SET, got {other:?}"),
     }
 }
+
+#[test]
+fn parse_copy_into() {
+    databricks().verified_stmt("COPY INTO my_table FROM 's3://bucket/path' FILEFORMAT = CSV");
+    databricks()
+        .verified_stmt("COPY INTO main.sales.orders FROM '/Volumes/c/s/v/' FILEFORMAT = JSON");
+    databricks()
+        .verified_stmt("COPY INTO delta.`/some/location` FROM 's3://b/' FILEFORMAT = PARQUET");
+    databricks().verified_stmt(r#"COPY INTO my_table FROM "s3://bucket/path" FILEFORMAT = AVRO"#);
+
+    // Column matching
+    databricks().verified_stmt("COPY INTO my_table BY POSITION FROM 's3://b/' FILEFORMAT = CSV");
+    databricks().verified_stmt("COPY INTO my_table (a, b, c) FROM 's3://b/' FILEFORMAT = CSV");
+
+    // Source with a projection
+    databricks().verified_stmt(
+        "COPY INTO my_table FROM (SELECT key, index, textData, 'constant_value' FROM 's3://b/') FILEFORMAT = CSV",
+    );
+    databricks().verified_stmt(
+        "COPY INTO my_table FROM (SELECT CAST(_c0 AS DATE) AS d, upper(_c1) AS name FROM 's3://b/') FILEFORMAT = CSV",
+    );
+    databricks().verified_stmt(
+        "COPY INTO my_table FROM (SELECT * FROM 's3://b/' WITH (CREDENTIAL c1)) FILEFORMAT = CSV",
+    );
+
+    // VALIDATE
+    databricks().verified_stmt("COPY INTO t FROM 's3://b/' FILEFORMAT = CSV VALIDATE ALL");
+    databricks().verified_stmt("COPY INTO t FROM 's3://b/' FILEFORMAT = CSV VALIDATE 15 ROWS");
+    databricks().one_statement_parses_to(
+        "COPY INTO t FROM 's3://b/' FILEFORMAT = CSV VALIDATE",
+        "COPY INTO t FROM 's3://b/' FILEFORMAT = CSV VALIDATE ALL",
+    );
+    databricks().one_statement_parses_to(
+        "COPY INTO t FROM 's3://b/' FILEFORMAT = CSV VALIDATE PATTERN = 'a*'",
+        "COPY INTO t FROM 's3://b/' FILEFORMAT = CSV VALIDATE ALL PATTERN = 'a*'",
+    );
+
+    // FILES / PATTERN
+    databricks().verified_stmt("COPY INTO t FROM 's3://b/' FILEFORMAT = CSV FILES = ('f1.csv')");
+    databricks()
+        .verified_stmt("COPY INTO t FROM 's3://b/' FILEFORMAT = CSV FILES = ('f1.csv', 'f2.csv')");
+    databricks().verified_stmt(
+        "COPY INTO t FROM 's3://b/' FILEFORMAT = CSV PATTERN = 'folder1/file_[a-g].csv'",
+    );
+
+    // FORMAT_OPTIONS / COPY_OPTIONS
+    databricks().verified_stmt(
+        "COPY INTO t FROM 's3://b/' FILEFORMAT = CSV FORMAT_OPTIONS ('header' = 'true', 'inferSchema' = 'true')",
+    );
+    databricks().verified_stmt(
+        "COPY INTO t FROM 's3://b/' FILEFORMAT = CSV COPY_OPTIONS ('force' = 'true', 'mergeSchema' = 'true')",
+    );
+    databricks().one_statement_parses_to(
+        "COPY INTO t FROM 's3://b/' FILEFORMAT = CSV FORMAT_OPTIONS('header' = 'true') COPY_OPTIONS('force' = 'true')",
+        "COPY INTO t FROM 's3://b/' FILEFORMAT = CSV FORMAT_OPTIONS ('header' = 'true') COPY_OPTIONS ('force' = 'true')",
+    );
+
+    // All clauses
+    databricks().verified_stmt(
+        r#"COPY INTO main.s.t (a, b) FROM (SELECT _c0, _c1 FROM 's3://b/' WITH (CREDENTIAL (AWS_ACCESS_KEY = 'k', AWS_SECRET_KEY = 's') ENCRYPTION (TYPE = 'AWS_SSE_C', MASTER_KEY = 'm'))) FILEFORMAT = CSV VALIDATE 10 ROWS PATTERN = '*.csv' FORMAT_OPTIONS ('header' = 'false') COPY_OPTIONS ('force' = 'true')"#,
+    );
+}
+
+#[test]
+fn parse_copy_into_source_with_clause() {
+    databricks().verified_stmt(
+        "COPY INTO t FROM 's3://b/' WITH (CREDENTIAL (AWS_ACCESS_KEY = 'k', AWS_SECRET_KEY = 's', AWS_SESSION_TOKEN = 't')) FILEFORMAT = JSON",
+    );
+    databricks().verified_stmt(
+        "COPY INTO t FROM 'abfss://c@a.dfs.core.windows.net/d' WITH (CREDENTIAL (AZURE_SAS_TOKEN = 'x')) FILEFORMAT = JSON",
+    );
+    databricks().verified_stmt(
+        "COPY INTO t FROM 's3://b/' WITH (CREDENTIAL source_credential) FILEFORMAT = JSON",
+    );
+    databricks().verified_stmt(
+        "COPY INTO t FROM 's3://b/' WITH (ENCRYPTION (TYPE = 'AWS_SSE_C', MASTER_KEY = 'm')) FILEFORMAT = JSON",
+    );
+
+    match databricks().verified_stmt(
+        "COPY INTO t FROM 's3://b/' WITH (CREDENTIAL (AWS_ACCESS_KEY = 'k') ENCRYPTION (TYPE = 'AWS_SSE_C')) FILEFORMAT = JSON",
+    ) {
+        Statement::CopyIntoDatabricks(copy) => {
+            assert_eq!(
+                copy.source.location,
+                Value::SingleQuotedString("s3://b/".to_owned()).with_empty_span()
+            );
+            assert_eq!(
+                copy.source.credential,
+                Some(CopyIntoDatabricksCredential::Temporary(vec![
+                    SqlOption::KeyValue {
+                        key: Ident::new("AWS_ACCESS_KEY"),
+                        value: Expr::Value(
+                            Value::SingleQuotedString("k".to_owned()).with_empty_span()
+                        ),
+                    }
+                ]))
+            );
+            assert_eq!(
+                copy.source.encryption,
+                vec![SqlOption::KeyValue {
+                    key: Ident::new("TYPE"),
+                    value: Expr::Value(
+                        Value::SingleQuotedString("AWS_SSE_C".to_owned()).with_empty_span()
+                    ),
+                }]
+            );
+        }
+        other => panic!("expected COPY INTO, got {other:?}"),
+    }
+
+    match databricks()
+        .verified_stmt("COPY INTO t FROM 's3://b/' WITH (CREDENTIAL c1) FILEFORMAT = JSON")
+    {
+        Statement::CopyIntoDatabricks(copy) => {
+            assert_eq!(
+                copy.source.credential,
+                Some(CopyIntoDatabricksCredential::Named(Ident::new("c1")))
+            );
+            assert!(copy.source.encryption.is_empty());
+        }
+        other => panic!("expected COPY INTO, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_copy_into_ast() {
+    let sql = r#"COPY INTO main.s.t (a, b) FROM (SELECT _c0, _c1 AS y FROM 's3://b/') FILEFORMAT = CSV VALIDATE 5 ROWS FILES = ('f1.csv', 'f2.csv') FORMAT_OPTIONS ('header' = 'true') COPY_OPTIONS ('force' = 'true')"#;
+    match databricks().verified_stmt(sql) {
+        Statement::CopyIntoDatabricks(copy) => {
+            assert_eq!(
+                copy.into,
+                ObjectName::from(vec![Ident::new("main"), Ident::new("s"), Ident::new("t")])
+            );
+            assert_eq!(
+                copy.columns,
+                Some(CopyIntoDatabricksColumns::Columns(vec![
+                    Ident::new("a"),
+                    Ident::new("b")
+                ]))
+            );
+            assert_eq!(copy.projection.map(|p| p.len()), Some(2));
+            assert_eq!(copy.file_format, Ident::new("CSV"));
+            assert_eq!(copy.validate, Some(CopyIntoDatabricksValidate::Rows(5)));
+            assert_eq!(
+                copy.files,
+                Some(CopyIntoDatabricksFiles::Files(vec![
+                    Value::SingleQuotedString("f1.csv".to_owned()).with_empty_span(),
+                    Value::SingleQuotedString("f2.csv".to_owned()).with_empty_span(),
+                ]))
+            );
+            assert_eq!(copy.format_options.len(), 1);
+            assert_eq!(copy.copy_options.len(), 1);
+        }
+        other => panic!("expected COPY INTO, got {other:?}"),
+    }
+
+    match databricks()
+        .verified_stmt("COPY INTO t BY POSITION FROM 's3://b/' FILEFORMAT = CSV PATTERN = '*.csv'")
+    {
+        Statement::CopyIntoDatabricks(copy) => {
+            assert_eq!(copy.columns, Some(CopyIntoDatabricksColumns::ByPosition));
+            assert_eq!(copy.projection, None);
+            assert_eq!(
+                copy.files,
+                Some(CopyIntoDatabricksFiles::Pattern(
+                    Value::SingleQuotedString("*.csv".to_owned()).with_empty_span()
+                ))
+            );
+            assert_eq!(copy.validate, None);
+        }
+        other => panic!("expected COPY INTO, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_copy_into_errors() {
+    let err = |sql: &str| databricks().parse_sql_statements(sql).unwrap_err();
+
+    // FILEFORMAT is mandatory
+    assert_eq!(
+        err("COPY INTO t FROM 's3://b/'"),
+        ParserError::ParserError("Expected: FILEFORMAT, found: EOF".to_string())
+    );
+    assert_eq!(
+        err("COPY INTO t FROM 's3://b/' FILEFORMAT CSV"),
+        ParserError::ParserError("Expected: =, found: CSV".to_string())
+    );
+    // The source must be a quoted string
+    assert_eq!(
+        err("COPY INTO t FROM s3_bucket FILEFORMAT = CSV"),
+        ParserError::ParserError("Expected: quoted string literal, found: s3_bucket".to_string())
+    );
+    // FILES and PATTERN are mutually exclusive
+    assert_eq!(
+        err("COPY INTO t FROM 's3://b/' FILEFORMAT = CSV FILES = ('a') PATTERN = 'b'"),
+        ParserError::ParserError("Expected: end of statement, found: PATTERN".to_string())
+    );
+    assert_eq!(
+        err("COPY INTO t FROM 's3://b/' FILEFORMAT = CSV FILES = (a)"),
+        ParserError::ParserError("Expected: quoted string literal, found: a".to_string())
+    );
+    assert_eq!(
+        err("COPY INTO t FROM 's3://b/' FILEFORMAT = CSV VALIDATE 10"),
+        ParserError::ParserError("Expected: ROWS, found: EOF".to_string())
+    );
+    // The WITH clause must not be empty
+    assert_eq!(
+        err("COPY INTO t FROM 's3://b/' WITH () FILEFORMAT = CSV"),
+        ParserError::ParserError("Expected: CREDENTIAL or ENCRYPTION, found: )".to_string())
+    );
+    // Option lists must not be empty
+    assert_eq!(
+        err("COPY INTO t FROM 's3://b/' FILEFORMAT = CSV FORMAT_OPTIONS ()"),
+        ParserError::ParserError("Expected: identifier, found: )".to_string())
+    );
+    // The projection must read from a source
+    assert_eq!(
+        err("COPY INTO t FROM (SELECT a) FILEFORMAT = CSV"),
+        ParserError::ParserError("Expected: FROM, found: )".to_string())
+    );
+
+    // Only dialects with `supports_copy_into_fileformat` accept the syntax
+    assert!(Parser::parse_sql(
+        &GenericDialect {},
+        "COPY INTO t FROM 's3://b/' FILEFORMAT = CSV"
+    )
+    .is_err());
+}

@@ -1903,6 +1903,18 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if this dialect supports `COPY INTO <table> FROM <location> FILEFORMAT = ...`.
+    ///
+    /// Example:
+    /// ```sql
+    /// COPY INTO my_table FROM 's3://bucket/path' FILEFORMAT = CSV;
+    /// ```
+    ///
+    /// [Databricks](https://docs.databricks.com/aws/en/sql/language-manual/delta-copy-into)
+    fn supports_copy_into_fileformat(&self) -> bool {
+        false
+    }
+
     /// Returns true if this dialect supports the `INSTALL` statement.
     ///
     /// Example:

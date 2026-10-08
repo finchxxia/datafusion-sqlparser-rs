@@ -12895,6 +12895,9 @@ impl<'a> Parser<'a> {
 
     /// Parse a copy statement
     pub fn parse_copy(&mut self) -> Result<Statement, ParserError> {
+        if self.dialect.supports_copy_into_fileformat() && self.parse_keyword(Keyword::INTO) {
+            return self.parse_copy_into_databricks().map(Into::into);
+        }
         let source;
         if self.consume_token(&Token::LParen) {
             source = CopySource::Query(self.parse_query()?);
@@ -12959,6 +12962,143 @@ impl<'a> Parser<'a> {
             legacy_options,
             values,
         })
+    }
+
+    /// Parse a Databricks `COPY INTO` statement, after the `COPY INTO` keywords.
+    ///
+    /// See <https://docs.databricks.com/aws/en/sql/language-manual/delta-copy-into>
+    fn parse_copy_into_databricks(&mut self) -> Result<CopyIntoDatabricks, ParserError> {
+        let into = self.parse_object_name(false)?;
+        let columns = if self.parse_keywords(&[Keyword::BY, Keyword::POSITION]) {
+            Some(CopyIntoDatabricksColumns::ByPosition)
+        } else if self.peek_token_ref().token == Token::LParen {
+            Some(CopyIntoDatabricksColumns::Columns(
+                self.parse_parenthesized_column_list(Mandatory, false)?,
+            ))
+        } else {
+            None
+        };
+
+        self.expect_keyword_is(Keyword::FROM)?;
+        let (projection, source) = if self.consume_token(&Token::LParen) {
+            self.expect_keyword_is(Keyword::SELECT)?;
+            let projection = self.parse_projection()?;
+            self.expect_keyword_is(Keyword::FROM)?;
+            let source = self.parse_copy_into_databricks_source()?;
+            self.expect_token(&Token::RParen)?;
+            (Some(projection), source)
+        } else {
+            (None, self.parse_copy_into_databricks_source()?)
+        };
+
+        self.expect_keyword_is(Keyword::FILEFORMAT)?;
+        self.expect_token(&Token::Eq)?;
+        let file_format = self.parse_identifier()?;
+
+        let validate = if self.parse_keyword(Keyword::VALIDATE) {
+            if matches!(self.peek_token_ref().token, Token::Number(..)) {
+                let rows = self.parse_literal_uint()?;
+                self.expect_keyword_is(Keyword::ROWS)?;
+                Some(CopyIntoDatabricksValidate::Rows(rows))
+            } else {
+                let _ = self.parse_keyword(Keyword::ALL);
+                Some(CopyIntoDatabricksValidate::All)
+            }
+        } else {
+            None
+        };
+
+        let files = if self.parse_keyword(Keyword::FILES) {
+            self.expect_token(&Token::Eq)?;
+            self.expect_token(&Token::LParen)?;
+            let files = self.parse_comma_separated(Parser::parse_quoted_string_value)?;
+            self.expect_token(&Token::RParen)?;
+            Some(CopyIntoDatabricksFiles::Files(files))
+        } else if self.parse_keyword(Keyword::PATTERN) {
+            self.expect_token(&Token::Eq)?;
+            Some(CopyIntoDatabricksFiles::Pattern(
+                self.parse_quoted_string_value()?,
+            ))
+        } else {
+            None
+        };
+
+        let format_options = if self.parse_keyword(Keyword::FORMAT_OPTIONS) {
+            self.parse_parenthesized_sql_options()?
+        } else {
+            vec![]
+        };
+        let copy_options = if self.parse_keyword(Keyword::COPY_OPTIONS) {
+            self.parse_parenthesized_sql_options()?
+        } else {
+            vec![]
+        };
+
+        Ok(CopyIntoDatabricks {
+            into,
+            columns,
+            projection,
+            source,
+            file_format,
+            validate,
+            files,
+            format_options,
+            copy_options,
+        })
+    }
+
+    /// Parse the `<location> [WITH ([CREDENTIAL ...] [ENCRYPTION (...)])]` source
+    /// of a Databricks `COPY INTO`.
+    fn parse_copy_into_databricks_source(
+        &mut self,
+    ) -> Result<CopyIntoDatabricksSource, ParserError> {
+        let location = self.parse_quoted_string_value()?;
+        let mut credential = None;
+        let mut encryption = vec![];
+        if self.parse_keyword(Keyword::WITH) {
+            self.expect_token(&Token::LParen)?;
+            if self.parse_keyword(Keyword::CREDENTIAL) {
+                credential = Some(if self.peek_token_ref().token == Token::LParen {
+                    CopyIntoDatabricksCredential::Temporary(self.parse_parenthesized_sql_options()?)
+                } else {
+                    CopyIntoDatabricksCredential::Named(self.parse_identifier()?)
+                });
+            }
+            if self.parse_keyword(Keyword::ENCRYPTION) {
+                encryption = self.parse_parenthesized_sql_options()?;
+            }
+            if credential.is_none() && encryption.is_empty() {
+                return self.expected_ref("CREDENTIAL or ENCRYPTION", self.peek_token_ref());
+            }
+            self.expect_token(&Token::RParen)?;
+        }
+        Ok(CopyIntoDatabricksSource {
+            location,
+            credential,
+            encryption,
+        })
+    }
+
+    /// Parse a single- or double-quoted string literal, keeping its quote style.
+    fn parse_quoted_string_value(&mut self) -> Result<ValueWithSpan, ParserError> {
+        let next_token = self.next_token();
+        match next_token.token {
+            Token::SingleQuotedString(s) => {
+                Ok(Value::SingleQuotedString(s).with_span(next_token.span))
+            }
+            Token::DoubleQuotedString(s) => {
+                Ok(Value::DoubleQuotedString(s).with_span(next_token.span))
+            }
+            _ => self.expected("quoted string literal", next_token),
+        }
+    }
+
+    /// Parse a parenthesized, non-empty list of `key = value` options.
+    fn parse_parenthesized_sql_options(&mut self) -> Result<Vec<SqlOption>, ParserError> {
+        self.expect_token(&Token::LParen)?;
+        let options = self.parse_comma_separated(Parser::parse_sql_option)?;
+        self.expect_token(&Token::RParen)?;
+        Ok(options)
     }
 
     /// Parse [Statement::Open]

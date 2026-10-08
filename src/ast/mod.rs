@@ -3792,6 +3792,11 @@ pub enum Statement {
         partition: Option<Box<Expr>>,
     },
     /// ```sql
+    /// COPY INTO <table> FROM <location> FILEFORMAT = <format> ...
+    /// ```
+    /// See <https://docs.databricks.com/aws/en/sql/language-manual/delta-copy-into>
+    CopyIntoDatabricks(CopyIntoDatabricks),
+    /// ```sql
     /// OPEN cursor_name
     /// ```
     /// Opens a cursor.
@@ -6613,6 +6618,7 @@ impl fmt::Display for Statement {
                 }
                 Ok(())
             }
+            Statement::CopyIntoDatabricks(s) => write!(f, "{s}"),
             Statement::CreateType {
                 name,
                 representation,
@@ -11924,6 +11930,200 @@ pub enum CopyIntoSnowflakeKind {
     Location,
 }
 
+/// Databricks `COPY INTO`, which loads files into a Delta table.
+///
+/// ```sql
+/// COPY INTO <table> [ BY POSITION | ( <col> [, ...] ) ]
+///   FROM { <source> | ( SELECT <expr> [, ...] FROM <source> ) }
+///   FILEFORMAT = <format>
+///   [ VALIDATE [ ALL | <n> ROWS ] ]
+///   [ FILES = ( '<file>' [, ...] ) | PATTERN = '<glob>' ]
+///   [ FORMAT_OPTIONS ( <key> = <value> [, ...] ) ]
+///   [ COPY_OPTIONS ( <key> = <value> [, ...] ) ]
+/// ```
+///
+/// See <https://docs.databricks.com/aws/en/sql/language-manual/delta-copy-into>
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub struct CopyIntoDatabricks {
+    /// Target table.
+    pub into: ObjectName,
+    /// How source columns are matched to target columns.
+    pub columns: Option<CopyIntoDatabricksColumns>,
+    /// Select list when the source is wrapped in `(SELECT ... FROM <source>)`.
+    pub projection: Option<Vec<SelectItem>>,
+    /// Source location.
+    pub source: CopyIntoDatabricksSource,
+    /// Value of `FILEFORMAT`.
+    pub file_format: Ident,
+    /// `VALIDATE` clause.
+    pub validate: Option<CopyIntoDatabricksValidate>,
+    /// `FILES` or `PATTERN` clause.
+    pub files: Option<CopyIntoDatabricksFiles>,
+    /// Entries of `FORMAT_OPTIONS`.
+    pub format_options: Vec<SqlOption>,
+    /// Entries of `COPY_OPTIONS`.
+    pub copy_options: Vec<SqlOption>,
+}
+
+impl fmt::Display for CopyIntoDatabricks {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "COPY INTO {}", self.into)?;
+        if let Some(columns) = &self.columns {
+            write!(f, " {columns}")?;
+        }
+        match &self.projection {
+            Some(projection) => write!(
+                f,
+                " FROM (SELECT {} FROM {})",
+                display_comma_separated(projection),
+                self.source
+            )?,
+            None => write!(f, " FROM {}", self.source)?,
+        }
+        write!(f, " FILEFORMAT = {}", self.file_format)?;
+        if let Some(validate) = &self.validate {
+            write!(f, " {validate}")?;
+        }
+        if let Some(files) = &self.files {
+            write!(f, " {files}")?;
+        }
+        if !self.format_options.is_empty() {
+            write!(
+                f,
+                " FORMAT_OPTIONS ({})",
+                display_comma_separated(&self.format_options)
+            )?;
+        }
+        if !self.copy_options.is_empty() {
+            write!(
+                f,
+                " COPY_OPTIONS ({})",
+                display_comma_separated(&self.copy_options)
+            )?;
+        }
+        Ok(())
+    }
+}
+
+/// Column matching of a Databricks `COPY INTO`.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum CopyIntoDatabricksColumns {
+    /// `BY POSITION`
+    ByPosition,
+    /// `( <col> [, ...] )`
+    Columns(Vec<Ident>),
+}
+
+impl fmt::Display for CopyIntoDatabricksColumns {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::ByPosition => write!(f, "BY POSITION"),
+            Self::Columns(columns) => write!(f, "({})", display_comma_separated(columns)),
+        }
+    }
+}
+
+/// Source location of a Databricks `COPY INTO`.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub struct CopyIntoDatabricksSource {
+    /// Location URI.
+    pub location: ValueWithSpan,
+    /// `CREDENTIAL` inside the `WITH ( ... )` clause.
+    pub credential: Option<CopyIntoDatabricksCredential>,
+    /// `ENCRYPTION ( ... )` options inside the `WITH ( ... )` clause.
+    pub encryption: Vec<SqlOption>,
+}
+
+impl fmt::Display for CopyIntoDatabricksSource {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.location)?;
+        if self.credential.is_some() || !self.encryption.is_empty() {
+            write!(f, " WITH (")?;
+            if let Some(credential) = &self.credential {
+                write!(f, "CREDENTIAL {credential}")?;
+            }
+            if !self.encryption.is_empty() {
+                if self.credential.is_some() {
+                    write!(f, " ")?;
+                }
+                write!(
+                    f,
+                    "ENCRYPTION ({})",
+                    display_comma_separated(&self.encryption)
+                )?;
+            }
+            write!(f, ")")?;
+        }
+        Ok(())
+    }
+}
+
+/// Credential used to access the source of a Databricks `COPY INTO`.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum CopyIntoDatabricksCredential {
+    /// `CREDENTIAL <credential_name>`
+    Named(Ident),
+    /// `CREDENTIAL ( <key> = <value> [, ...] )`
+    Temporary(Vec<SqlOption>),
+}
+
+impl fmt::Display for CopyIntoDatabricksCredential {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Named(name) => write!(f, "{name}"),
+            Self::Temporary(options) => write!(f, "({})", display_comma_separated(options)),
+        }
+    }
+}
+
+/// `VALIDATE` clause of a Databricks `COPY INTO`.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum CopyIntoDatabricksValidate {
+    /// `VALIDATE ALL`, also the meaning of a bare `VALIDATE`.
+    All,
+    /// `VALIDATE <n> ROWS`
+    Rows(u64),
+}
+
+impl fmt::Display for CopyIntoDatabricksValidate {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::All => write!(f, "VALIDATE ALL"),
+            Self::Rows(n) => write!(f, "VALIDATE {n} ROWS"),
+        }
+    }
+}
+
+/// File selection of a Databricks `COPY INTO`.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum CopyIntoDatabricksFiles {
+    /// `FILES = ( '<file>' [, ...] )`
+    Files(Vec<ValueWithSpan>),
+    /// `PATTERN = '<glob>'`
+    Pattern(ValueWithSpan),
+}
+
+impl fmt::Display for CopyIntoDatabricksFiles {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Files(files) => write!(f, "FILES = ({})", display_comma_separated(files)),
+            Self::Pattern(pattern) => write!(f, "PATTERN = {pattern}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
@@ -13077,6 +13277,12 @@ impl From<CreateUser> for Statement {
 impl From<CreateWarehouse> for Statement {
     fn from(c: CreateWarehouse) -> Self {
         Self::CreateWarehouse(c)
+    }
+}
+
+impl From<CopyIntoDatabricks> for Statement {
+    fn from(c: CopyIntoDatabricks) -> Self {
+        Self::CopyIntoDatabricks(c)
     }
 }
 

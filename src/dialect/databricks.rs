@@ -104,6 +104,11 @@ impl Dialect for DatabricksDialect {
         true
     }
 
+    /// See <https://docs.databricks.com/aws/en/sql/language-manual/delta-copy-into>
+    fn supports_copy_into_fileformat(&self) -> bool {
+        true
+    }
+
     /// See <https://docs.databricks.com/aws/en/sql/language-manual/functions/bangsign>
     fn supports_bang_not_operator(&self) -> bool {
         true
