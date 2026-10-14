@@ -336,6 +336,7 @@ impl Spanned for Statement {
                 local: _,
                 path: _,
                 file_format: _,
+                options: _,
                 source,
             } => source.span(),
             Statement::Case(stmt) => stmt.span(),

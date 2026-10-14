@@ -88,6 +88,11 @@ impl Dialect for SparkSqlDialect {
         true
     }
 
+    /// See <https://spark.apache.org/docs/latest/sql-ref-syntax-dml-insert-overwrite-directory.html>
+    fn supports_insert_overwrite_directory_using(&self) -> bool {
+        true
+    }
+
     /// `LONG` is an alias for `BIGINT` in Spark SQL.
     ///
     /// See <https://spark.apache.org/docs/latest/sql-ref-datatypes.html>

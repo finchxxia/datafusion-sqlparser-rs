@@ -17,7 +17,7 @@
 
 use sqlparser::ast::helpers::attached_token::AttachedToken;
 use sqlparser::ast::*;
-use sqlparser::dialect::{DatabricksDialect, GenericDialect, SparkSqlDialect};
+use sqlparser::dialect::{DatabricksDialect, GenericDialect, HiveDialect, SparkSqlDialect};
 use sqlparser::parser::{Parser, ParserError};
 use sqlparser::tokenizer::Span;
 use test_utils::*;
@@ -1245,6 +1245,133 @@ fn parse_copy_into_errors() {
     assert!(Parser::parse_sql(
         &GenericDialect {},
         "COPY INTO t FROM 's3://b/' FILEFORMAT = CSV"
+    )
+    .is_err());
+}
+
+#[test]
+fn parse_insert_overwrite_directory_using() {
+    // https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-dml-insert-overwrite-directory.html
+    let dialects = all_dialects_where(|d| d.supports_insert_overwrite_directory_using());
+
+    dialects.verified_stmt(
+        "INSERT OVERWRITE DIRECTORY '/tmp/destination' USING parquet OPTIONS (col1 = 1, col2 = 2, col3 = 'test') SELECT * FROM test_table",
+    );
+    dialects.verified_stmt(
+        "INSERT OVERWRITE LOCAL DIRECTORY '/tmp/destination' USING csv SELECT * FROM test_table",
+    );
+    dialects.verified_stmt(
+        "INSERT OVERWRITE DIRECTORY '/tmp/destination' USING json VALUES (1, 'a'), (2, NULL)",
+    );
+    dialects
+        .verified_stmt("INSERT OVERWRITE DIRECTORY '/tmp/destination' USING orc TABLE test_table");
+
+    // The `=` between an option key and value is optional.
+    dialects.one_statement_parses_to(
+        "INSERT OVERWRITE DIRECTORY '/tmp/destination' USING parquet OPTIONS (col1 1, col2 2, col3 'test') SELECT * FROM test_table",
+        "INSERT OVERWRITE DIRECTORY '/tmp/destination' USING parquet OPTIONS (col1 = 1, col2 = 2, col3 = 'test') SELECT * FROM test_table",
+    );
+
+    // The path may be omitted and provided via the `path` option instead.
+    dialects.verified_stmt(
+        "INSERT OVERWRITE DIRECTORY USING parquet OPTIONS ('path' = '/tmp/destination') SELECT * FROM test_table",
+    );
+    dialects.one_statement_parses_to(
+        "INSERT OVERWRITE DIRECTORY USING parquet OPTIONS ('path' '/tmp/destination', 'col1' 1) SELECT * FROM test_table",
+        "INSERT OVERWRITE DIRECTORY USING parquet OPTIONS ('path' = '/tmp/destination', 'col1' = 1) SELECT * FROM test_table",
+    );
+
+    // `file_format` may be a fully qualified class name.
+    dialects.verified_stmt(
+        "INSERT OVERWRITE DIRECTORY '/tmp/destination' USING com.example.CustomFormat SELECT * FROM test_table",
+    );
+
+    match dialects.one_statement_parses_to(
+        "INSERT OVERWRITE LOCAL DIRECTORY '/tmp/destination' USING csv OPTIONS (header = true, compression 'gzip') VALUES (1, 'a'), (2, NULL)",
+        "INSERT OVERWRITE LOCAL DIRECTORY '/tmp/destination' USING csv OPTIONS (header = true, compression = 'gzip') VALUES (1, 'a'), (2, NULL)",
+    ) {
+        Statement::Directory {
+            overwrite,
+            local,
+            path,
+            file_format,
+            options,
+            source,
+        } => {
+            assert!(overwrite);
+            assert!(local);
+            assert_eq!(Some("/tmp/destination".to_string()), path);
+            assert_eq!(
+                Some(DirectoryFileFormat::Using(ObjectName::from(vec![
+                    Ident::new("csv")
+                ]))),
+                file_format
+            );
+            assert_eq!(
+                vec![
+                    SqlOption::KeyValue {
+                        key: Ident::new("header"),
+                        value: Expr::Value(Value::Boolean(true).with_empty_span()),
+                    },
+                    SqlOption::KeyValue {
+                        key: Ident::new("compression"),
+                        value: Expr::Value(
+                            Value::SingleQuotedString("gzip".to_string()).with_empty_span()
+                        ),
+                    },
+                ],
+                options
+            );
+            assert_eq!("VALUES (1, 'a'), (2, NULL)", source.to_string());
+        }
+        _ => unreachable!(),
+    }
+
+    // The Hive `STORED AS` form still parses.
+    dialects.verified_stmt(
+        "INSERT OVERWRITE LOCAL DIRECTORY '/tmp/destination' STORED AS TEXTFILE SELECT * FROM test_table",
+    );
+
+    // A directory path or `USING` clause is required.
+    assert_eq!(
+        databricks()
+            .parse_sql_statements("INSERT OVERWRITE DIRECTORY SELECT 1")
+            .unwrap_err(),
+        ParserError::ParserError("Expected: a directory path or USING, found: SELECT".to_string())
+    );
+    // `USING` requires a file format.
+    assert_eq!(
+        databricks()
+            .parse_sql_statements("INSERT OVERWRITE DIRECTORY '/tmp/destination' USING")
+            .unwrap_err(),
+        ParserError::ParserError("Expected: identifier, found: EOF".to_string())
+    );
+    // `OPTIONS` must not be empty.
+    assert_eq!(
+        databricks()
+            .parse_sql_statements(
+                "INSERT OVERWRITE DIRECTORY '/tmp/destination' USING parquet OPTIONS () SELECT 1"
+            )
+            .unwrap_err(),
+        ParserError::ParserError("Expected: identifier, found: )".to_string())
+    );
+    // `OPTIONS` is only valid in combination with `USING`.
+    assert!(databricks()
+        .parse_sql_statements(
+            "INSERT OVERWRITE DIRECTORY '/tmp/destination' STORED AS TEXTFILE OPTIONS (col1 = 1) SELECT 1"
+        )
+        .is_err());
+
+    // Dialects without `supports_insert_overwrite_directory_using` require a
+    // path and do not accept `USING`/`OPTIONS`.
+    assert!(Parser::parse_sql(
+        &HiveDialect {},
+        "INSERT OVERWRITE DIRECTORY '/tmp/destination' USING parquet SELECT 1"
+    )
+    .is_err());
+    assert!(Parser::parse_sql(
+        &HiveDialect {},
+        "INSERT OVERWRITE DIRECTORY USING parquet SELECT 1"
     )
     .is_err());
 }

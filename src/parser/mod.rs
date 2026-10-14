@@ -11354,6 +11354,18 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse a single `key [ = ] value` entry of the `OPTIONS` clause of
+    /// `INSERT ... DIRECTORY ... USING` (Databricks/Spark).
+    ///
+    /// [Databricks](https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-dml-insert-overwrite-directory.html)
+    /// [Spark](https://spark.apache.org/docs/latest/sql-ref-syntax-dml-insert-overwrite-directory.html)
+    fn parse_insert_directory_option(&mut self) -> Result<SqlOption, ParserError> {
+        let key = self.parse_identifier()?;
+        let _ = self.consume_token(&Token::Eq);
+        let value = self.parse_expr()?;
+        Ok(SqlOption::KeyValue { key, value })
+    }
+
     /// Parse a `CLUSTERED` table option (MSSQL-specific syntaxes supported).
     pub fn parse_option_clustered(&mut self) -> Result<SqlOption, ParserError> {
         if self.parse_keywords(&[
@@ -19596,11 +19608,33 @@ impl<'a> Parser<'a> {
         let local = self.parse_keyword(Keyword::LOCAL);
 
         if self.parse_keyword(Keyword::DIRECTORY) {
-            let path = self.parse_literal_string()?;
+            let supports_using = self.dialect.supports_insert_overwrite_directory_using();
+            // Databricks/Spark allow omitting the path and providing it
+            // via the `path` entry of `OPTIONS` instead.
+            let path = if supports_using {
+                self.maybe_parse(|p| p.parse_literal_string())?
+            } else {
+                Some(self.parse_literal_string()?)
+            };
             let file_format = if self.parse_keywords(&[Keyword::STORED, Keyword::AS]) {
-                Some(self.parse_file_format()?)
+                Some(DirectoryFileFormat::StoredAs(self.parse_file_format()?))
+            } else if supports_using && self.parse_keyword(Keyword::USING) {
+                Some(DirectoryFileFormat::Using(self.parse_object_name(false)?))
             } else {
                 None
+            };
+            if path.is_none() && file_format.is_none() {
+                return self.expected_ref("a directory path or USING", self.peek_token_ref());
+            }
+            let options = if matches!(file_format, Some(DirectoryFileFormat::Using(_)))
+                && self.parse_keyword(Keyword::OPTIONS)
+            {
+                self.expect_token(&Token::LParen)?;
+                let options = self.parse_comma_separated(Parser::parse_insert_directory_option)?;
+                self.expect_token(&Token::RParen)?;
+                options
+            } else {
+                vec![]
             };
             let source = self.parse_query()?;
             Ok(Statement::Directory {
@@ -19608,6 +19642,7 @@ impl<'a> Parser<'a> {
                 path,
                 overwrite,
                 file_format,
+                options,
                 source,
             })
         } else {

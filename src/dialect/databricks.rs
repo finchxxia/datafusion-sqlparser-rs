@@ -138,6 +138,11 @@ impl Dialect for DatabricksDialect {
         true
     }
 
+    /// See <https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-dml-insert-overwrite-directory.html>
+    fn supports_insert_overwrite_directory_using(&self) -> bool {
+        true
+    }
+
     /// See <https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-declare-variable>
     fn supports_declare_session_variables(&self) -> bool {
         true

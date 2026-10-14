@@ -405,6 +405,10 @@ impl Dialect for GenericDialect {
         true
     }
 
+    fn supports_insert_overwrite_directory_using(&self) -> bool {
+        true
+    }
+
     fn supports_agg_state_type(&self) -> bool {
         true
     }

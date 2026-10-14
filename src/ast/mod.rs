@@ -3715,9 +3715,16 @@ pub enum Statement {
         /// Whether the directory is local to the server.
         local: bool,
         /// Path to the directory or files.
-        path: String,
+        ///
+        /// Databricks allows omitting the path and specifying it
+        /// via the `path` entry of `OPTIONS` instead.
+        path: Option<String>,
         /// Optional file format for the data.
-        file_format: Option<FileFormat>,
+        file_format: Option<DirectoryFileFormat>,
+        /// `OPTIONS (key [ = ] val, ...)` for the writer.
+        ///
+        /// [Databricks](https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-dml-insert-overwrite-directory.html)
+        options: Vec<SqlOption>,
         /// Source query providing data to load.
         source: Box<Query>,
     },
@@ -5410,17 +5417,23 @@ impl fmt::Display for Statement {
                 local,
                 path,
                 file_format,
+                options,
                 source,
             } => {
                 write!(
                     f,
-                    "INSERT{overwrite}{local} DIRECTORY '{path}'",
+                    "INSERT{overwrite}{local} DIRECTORY",
                     overwrite = if *overwrite { " OVERWRITE" } else { "" },
                     local = if *local { " LOCAL" } else { "" },
-                    path = path
                 )?;
+                if let Some(path) = path {
+                    write!(f, " '{path}'")?;
+                }
                 if let Some(ref ff) = file_format {
-                    write!(f, " STORED AS {ff}")?
+                    write!(f, " {ff}")?
+                }
+                if !options.is_empty() {
+                    write!(f, " OPTIONS ({})", display_comma_separated(options))?;
                 }
                 write!(f, " {source}")
             }
@@ -8829,6 +8842,30 @@ impl fmt::Display for FileFormat {
             RCFILE => "RCFILE",
             JSONFILE => "JSONFILE",
         })
+    }
+}
+
+/// The file format clause of an `INSERT [OVERWRITE] [LOCAL] DIRECTORY` statement.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum DirectoryFileFormat {
+    /// `STORED AS <file_format>` (Hive)
+    StoredAs(FileFormat),
+    /// `USING <file_format>` (Databricks / Spark). `file_format` may be a
+    /// format name such as `parquet` or a fully qualified class name.
+    ///
+    /// [Databricks](https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-dml-insert-overwrite-directory.html)
+    /// [Spark](https://spark.apache.org/docs/latest/sql-ref-syntax-dml-insert-overwrite-directory.html)
+    Using(ObjectName),
+}
+
+impl fmt::Display for DirectoryFileFormat {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            DirectoryFileFormat::StoredAs(format) => write!(f, "STORED AS {format}"),
+            DirectoryFileFormat::Using(format) => write!(f, "USING {format}"),
+        }
     }
 }
 

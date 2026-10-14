@@ -1587,6 +1587,18 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if this dialect supports
+    /// `INSERT [OVERWRITE] [LOCAL] DIRECTORY [path] USING <file_format> [OPTIONS (...)]`.
+    ///
+    /// The path is optional for this variant and may instead be provided
+    /// via the `path` entry of `OPTIONS`.
+    ///
+    /// [Databricks](https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-dml-insert-overwrite-directory.html)
+    /// [Spark](https://spark.apache.org/docs/latest/sql-ref-syntax-dml-insert-overwrite-directory.html)
+    fn supports_insert_overwrite_directory_using(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports session variable declarations:
     ///
     /// ```sql
