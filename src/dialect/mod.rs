@@ -111,6 +111,25 @@ pub use self::teradata::TeradataDialect;
 /// assert_eq!(d.identifier_quote_style("foo"), None);
 /// ```
 ///
+/// # Overriding other methods
+///
+/// Any other method can be overridden with an expression of the method's return type:
+/// ```
+/// use sqlparser::derive_dialect;
+/// use sqlparser::dialect::{BindPlaceholderStyle, Dialect, GenericDialect};
+///
+/// derive_dialect!(DollarBindDialect, GenericDialect,
+///     overrides = {
+///         ordered_bind_placeholder_style = true.then_some(BindPlaceholderStyle::DollarNumbered)
+///     }
+/// );
+/// let d: &dyn Dialect = &DollarBindDialect::new();
+/// assert_eq!(
+///     d.ordered_bind_placeholder_style(),
+///     Some(BindPlaceholderStyle::DollarNumbered)
+/// );
+/// ```
+///
 /// # Type Identity
 ///
 /// By default, derived dialects have their own `TypeId`. Set `preserve_type_id = true` to
@@ -134,7 +153,7 @@ pub use self::teradata::TeradataDialect;
 #[cfg(feature = "derive-dialect")]
 pub use sqlparser_derive::derive_dialect;
 
-use crate::ast::{ColumnOption, Expr, GranteesType, Ident, ObjectNamePart, Statement};
+use crate::ast::{ColumnOption, DataType, Expr, GranteesType, Ident, ObjectNamePart, Statement};
 pub use crate::keywords;
 use crate::keywords::Keyword;
 use crate::parser::{Parser, ParserError};
@@ -167,6 +186,17 @@ macro_rules! dialect_is {
     ($dialect:ident is $($dialect_type:ty)|+) => {
         ($($dialect.is::<$dialect_type>())||+)
     }
+}
+
+/// Placeholder spelling for ordered unnamed bind parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
+pub enum BindPlaceholderStyle {
+    /// `?`
+    QuestionMark,
+    /// `$1`, `$2`, ...
+    DollarNumbered,
 }
 
 /// Encapsulates the differences between SQL implementations.
@@ -256,6 +286,15 @@ pub trait Dialect: Debug + Any {
         None
     }
 
+    /// Return the placeholder syntax this server accepts for ordered unnamed bind parameters.
+    ///
+    /// This describes the server contract rather than every placeholder the parser can tokenize.
+    /// `None` means this dialect does not specify an ordered bind syntax.
+    /// Dollar-quoted strings are controlled by [`Dialect::supports_dollar_placeholder`].
+    fn ordered_bind_placeholder_style(&self) -> Option<BindPlaceholderStyle> {
+        None
+    }
+
     /// Determine if a character is a valid start character for an unquoted identifier
     fn is_identifier_start(&self, ch: char) -> bool;
 
@@ -282,6 +321,22 @@ pub trait Dialect: Debug + Any {
     /// SELECT '\';
     /// ```
     fn supports_string_literal_backslash_escape(&self) -> bool {
+        false
+    }
+
+    /// Does the dialect tokenize `N'...'` as a national string literal?
+    ///
+    /// Dialects such as SQLite treat `N` as a plain identifier, so `N'foo'` is
+    /// the identifier `N` followed by a string literal, not a national string.
+    fn supports_national_string_literal(&self) -> bool {
+        true
+    }
+
+    /// Treats literal prefixes immediately after `.` as unquoted identifiers.
+    ///
+    /// [MySQL](https://dev.mysql.com/doc/refman/8.4/en/identifiers.html),
+    /// [MariaDB](https://mariadb.com/docs/server/reference/sql-structure/sql-language-structure/identifier-names)
+    fn supports_literal_prefix_in_qualified_name(&self) -> bool {
         false
     }
 
@@ -380,6 +435,16 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports `AS MATERIALIZED` and `AS NOT MATERIALIZED`
+    /// in a common table expression.
+    ///
+    /// ```sql
+    /// WITH cte AS MATERIALIZED (SELECT 1) SELECT * FROM cte
+    /// ```
+    fn supports_cte_materialization(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialects supports `group sets, roll up, or cube` expressions.
     fn supports_group_by_expr(&self) -> bool {
         false
@@ -429,6 +494,14 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports `ON`/`USING` after a comma-joined table,
+    /// e.g. `SELECT * FROM t, u ON t.a = u.a`.
+    ///
+    /// [SQLite](https://www.sqlite.org/syntax/join-clause.html)
+    fn supports_comma_join_constraint(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports CONNECT BY.
     fn supports_connect_by(&self) -> bool {
         false
@@ -452,6 +525,19 @@ pub trait Dialect: Debug + Any {
     /// Returns true if the dialect supports a bare expression as the right-hand
     /// side of `IN`, without a parenthesized list — as in `x IN 'a'`.
     fn supports_in_unparenthesized_expr(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect supports `GLOBAL IN` and `GLOBAL NOT IN`.
+    fn supports_global_in(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect supports a table name or table-valued function
+    /// as the right-hand side of `IN`, e.g. `x IN t`, `x IN schema.t`, or `x IN f(args)`.
+    ///
+    /// [SQLite](https://www.sqlite.org/lang_expr.html#in_op)
+    fn supports_in_table_expression(&self) -> bool {
         false
     }
 
@@ -499,6 +585,12 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if a period directly after an identifier starts a tuple
+    /// element access such as `t.1`, instead of the number `.1`.
+    fn supports_tuple_element_access(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports numbers containing underscores, e.g. `10_000_000`
     fn supports_numeric_literal_underscores(&self) -> bool {
         false
@@ -537,8 +629,32 @@ pub trait Dialect: Debug + Any {
     /// ```sql
     /// SELECT transform(array(1, 2, 3), x -> x + 1); -- returns [2,3,4]
     /// ```
+    ///
+    /// This enables both the `->` spelling above and the `LAMBDA` keyword
+    /// spelling gated by [`Self::supports_lambda_keyword_syntax`]. A dialect
+    /// that uses `->` as a binary operator should override only the latter.
     fn supports_lambda_functions(&self) -> bool {
         false
+    }
+
+    /// Returns true if the dialect supports the `LAMBDA` keyword spelling of
+    /// lambda functions, for example:
+    ///
+    /// ```sql
+    /// SELECT list_transform([1, 2, 3], lambda x : x + 1); -- returns [2, 3, 4]
+    /// ```
+    ///
+    /// This spelling does not claim the `->` token, so it can be enabled by
+    /// dialects that already give `->` a different meaning, such as JSON
+    /// member access.
+    ///
+    /// Defaults to [`Self::supports_lambda_functions`], so dialects supporting
+    /// the `->` spelling accept the `LAMBDA` spelling too unless they say
+    /// otherwise.
+    ///
+    /// See <https://duckdb.org/docs/stable/sql/functions/lambda>
+    fn supports_lambda_keyword_syntax(&self) -> bool {
+        self.supports_lambda_functions()
     }
 
     /// Returns true if the dialect supports multiple variable assignment
@@ -610,6 +726,12 @@ pub trait Dialect: Debug + Any {
     fn parse_prefix(&self, _parser: &mut Parser) -> Option<Result<Expr, ParserError>> {
         // return None to fall back to the default behavior
         None
+    }
+
+    /// Does the dialect support the `APPROXIMATE PERCENTILE_DISC` function syntax?
+    /// See <https://docs.aws.amazon.com/redshift/latest/dg/r_APPROXIMATE_PERCENTILE_DISC.html>
+    fn supports_approximate_percentile_disc(&self) -> bool {
+        false
     }
 
     /// Does the dialect support trailing commas around the query?
@@ -884,6 +1006,20 @@ pub trait Dialect: Debug + Any {
                 Ok(p!(Is))
             }
             Token::Word(w) if w.keyword == Keyword::IS => Ok(p!(Is)),
+            Token::Word(w) if w.keyword == Keyword::GLOBAL && self.supports_global_in() => {
+                match (
+                    &parser.peek_nth_token_ref(1).token,
+                    &parser.peek_nth_token_ref(2).token,
+                ) {
+                    (Token::Word(w), _) if w.keyword == Keyword::IN => Ok(p!(Between)),
+                    (Token::Word(w), Token::Word(w2))
+                        if w.keyword == Keyword::NOT && w2.keyword == Keyword::IN =>
+                    {
+                        Ok(p!(Between))
+                    }
+                    _ => Ok(self.prec_unknown()),
+                }
+            }
             Token::Word(w) if w.keyword == Keyword::IN => Ok(p!(Between)),
             Token::Word(w) if w.keyword == Keyword::BETWEEN => Ok(p!(Between)),
             Token::Word(w) if w.keyword == Keyword::OVERLAPS => Ok(p!(Between)),
@@ -976,6 +1112,11 @@ pub trait Dialect: Debug + Any {
         None
     }
 
+    /// Parses a dialect-specific type, leaving the cursor unchanged on `None` to use standard parsing.
+    fn parse_data_type(&self, _parser: &mut Parser) -> Option<Result<DataType, ParserError>> {
+        None
+    }
+
     /// Dialect-specific column option parser override
     ///
     /// This method is called to parse the next column option.
@@ -1023,6 +1164,22 @@ pub trait Dialect: Debug + Any {
     /// Returns the precedence when the precedence is otherwise unknown
     fn prec_unknown(&self) -> u8 {
         0
+    }
+
+    /// Precedence used to stop parsing the low bound expression of a BETWEEN predicate.
+    fn between_low_bound_precedence(&self) -> u8 {
+        self.prec_value(Precedence::Between)
+    }
+
+    /// Returns true if the low bound of a `BETWEEN` predicate may end with one comparison,
+    /// as in `a BETWEEN b > 1 AND c`, while `IS`, `LIKE` and `BETWEEN` still end the bound.
+    ///
+    /// The low bound is a `b_expr` in the
+    /// [PostgreSQL grammar](https://github.com/postgres/postgres/blob/master/src/backend/parser/gram.y)
+    /// and a `valueExpression` in the
+    /// [Spark grammar](https://github.com/apache/spark/blob/master/sql/api/src/main/antlr4/org/apache/spark/sql/catalyst/parser/SqlBaseParser.g4).
+    fn supports_comparison_in_between_low_bound(&self) -> bool {
+        false
     }
 
     /// Returns true if this dialect requires the `TABLE` keyword after `DESCRIBE`
@@ -1112,6 +1269,12 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if a data type can carry a collation, including inside a
+    /// nested type such as `MAP<STRING COLLATE UTF8_BINARY, STRING>`.
+    fn supports_data_type_collation(&self) -> bool {
+        false
+    }
+
     /// Returns true if this dialect supports the `ARRAY` type without
     /// specifying an element type.
     ///
@@ -1125,6 +1288,33 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if this dialect supports the `ARRAY(element_type)` syntax.
+    ///
+    /// Example:
+    /// ```sql
+    /// CREATE TABLE t (a ARRAY(VARCHAR));
+    /// ```
+    fn supports_array_typedef_with_parentheses(&self) -> bool {
+        false
+    }
+
+    /// Returns true if this dialect supports `NOT NULL` on an element type in
+    /// an `ARRAY(element_type)` definition.
+    fn supports_array_element_not_null(&self) -> bool {
+        false
+    }
+
+    /// Returns true if this dialect supports the `MAP(key_type, value_type)` syntax.
+    fn supports_map_typedef_with_parentheses(&self) -> bool {
+        false
+    }
+
+    /// Returns true if this dialect supports `NOT NULL` on the value type in
+    /// a `MAP(key_type, value_type)` definition.
+    fn supports_map_value_not_null(&self) -> bool {
+        false
+    }
+
     /// Returns true if this dialect supports extra parentheses around
     /// lone table names or derived tables in the `FROM` clause.
     ///
@@ -1135,7 +1325,8 @@ pub trait Dialect: Debug + Any {
     /// SELECT * FROM (mytable) AS alias;
     /// ```
     ///
-    /// [Snowflake](https://docs.snowflake.com/en/sql-reference/constructs/from)
+    /// [Snowflake](https://docs.snowflake.com/en/sql-reference/constructs/from),
+    /// [SQLite](https://www.sqlite.org/syntax/table-or-subquery.html)
     fn supports_parens_around_table_factor(&self) -> bool {
         false
     }
@@ -1154,8 +1345,7 @@ pub trait Dialect: Debug + Any {
         false
     }
 
-    /// Returns true if this dialect allows dollar placeholders
-    /// e.g. `SELECT $var` (SQLite)
+    /// Enables SQLite `$` placeholders containing `$` characters and disables dollar-quoted strings.
     fn supports_dollar_placeholder(&self) -> bool {
         false
     }
@@ -1205,6 +1395,12 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect allows string literals as column names in `CREATE TABLE`.
+    /// SQLite's grammar rule `nm ::= id | STRING | JOIN_KW` permits this.
+    fn supports_string_literal_column_names(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports `a!` expressions
     fn supports_factorial_operator(&self) -> bool {
         false
@@ -1221,9 +1417,35 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports `#` as the start of a single line comment,
+    /// e.g. `SELECT 1 # comment`
+    fn supports_hash_comment(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect supports inline data for
+    /// `COPY ... FROM STDIN`, captured verbatim by the tokenizer.
+    fn supports_copy_from_stdin_data(&self) -> bool {
+        false
+    }
+
+    /// Returns true if `#` starts a single line comment only when followed by an ASCII
+    /// space or `!`, so `# comment` and `#! comment` are comments but `#comment` is not.
+    fn requires_hash_comment_space(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports optimizer hints in multiline comments
     /// e.g. `/*!50110 KEY_BLOCK_SIZE = 1024*/`
     fn supports_multiline_comment_hints(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect accepts an unterminated block comment at end of input
+    /// e.g. `SELECT 1 /* comment`
+    ///
+    /// [SQLite](https://www.sqlite.org/lang_comment.html)
+    fn supports_unterminated_block_comments(&self) -> bool {
         false
     }
 
@@ -1330,6 +1552,12 @@ pub trait Dialect: Debug + Any {
     /// Returns true if the dialect supports the `KEY` marker after the data
     /// type in a `CREATE TABLE` column definition (Apache Doris key columns).
     fn supports_column_key_option(&self) -> bool {
+        false
+    }
+
+    /// Returns true if this dialect supports `PROC` as an abbreviation for
+    /// `PROCEDURE` in a `CREATE` statement.
+    fn supports_create_proc_syntax(&self) -> bool {
         false
     }
 
@@ -1612,6 +1840,13 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect accepts `VALUE` as a synonym of `VALUES`.
+    ///
+    /// [MySQL](https://dev.mysql.com/doc/refman/8.4/en/insert.html)
+    fn supports_singular_value_keyword(&self) -> bool {
+        false
+    }
+
     /// Returns true if this dialect supports `SET` statements without an explicit
     /// assignment operator such as `=`. For example: `SET SHOWPLAN_XML ON`.
     fn supports_set_stmt_without_operator(&self) -> bool {
@@ -1629,6 +1864,15 @@ pub trait Dialect: Debug + Any {
     /// to enable looking ahead if needed.
     fn is_select_item_alias(&self, explicit: bool, kw: &Keyword, parser: &mut Parser) -> bool {
         explicit || self.is_column_alias(kw, parser)
+    }
+
+    /// Returns true if `OVER` without a following `(` or plain-identifier window name
+    /// may be used as an implicit column alias rather than starting a window clause.
+    ///
+    /// SQLite reads `OVER` as a keyword only when `(` or a name follows, see
+    /// `analyzeOverKeyword` in [tokenize.c](https://sqlite.org/src/file?name=src/tokenize.c)
+    fn supports_over_keyword_as_column_alias(&self) -> bool {
+        false
     }
 
     /// Returns true if the specified keyword should be parsed as a table factor identifier.
@@ -1650,6 +1894,23 @@ pub trait Dialect: Debug + Any {
         explicit || self.is_table_alias(kw, parser)
     }
 
+    /// Returns true if a single-quoted string can name a select item, as in `SELECT 1 AS 'x'`.
+    /// `explicit` is true when the alias follows `AS`.
+    ///
+    /// [MySQL](https://dev.mysql.com/doc/refman/8.4/en/problems-with-alias.html),
+    /// [SQLite](https://www.sqlite.org/lang_keywords.html)
+    fn supports_string_literal_column_alias(&self, _explicit: bool) -> bool {
+        true
+    }
+
+    /// Returns true if a single-quoted string can name a table, as in `FROM t AS 'x'`.
+    /// `explicit` is true when the alias follows `AS`.
+    ///
+    /// [SQLite](https://www.sqlite.org/lang_keywords.html)
+    fn supports_string_literal_table_alias(&self, _explicit: bool) -> bool {
+        true
+    }
+
     /// Returns true if this dialect supports querying historical table data
     /// by specifying which version of the data to query.
     fn supports_table_versioning(&self) -> bool {
@@ -1665,6 +1926,13 @@ pub trait Dialect: Debug + Any {
 
     /// Returns true if the dialect supports the table hints in the `FROM` clause.
     fn supports_table_hints(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect supports SQLite's `INDEXED BY` and `NOT INDEXED` index-selection clauses.
+    ///
+    /// See <https://www.sqlite.org/lang_indexedby.html>
+    fn supports_indexed_by(&self) -> bool {
         false
     }
 
@@ -1689,6 +1957,18 @@ pub trait Dialect: Debug + Any {
     /// Postgres: <https://www.postgresql.org/docs/9.5/functions-geometry.html>
     /// e.g. @@ circle '((0,0),10)'
     fn supports_geometric_types(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect tokenizes `~~`, `~~*`, `!~~` and `!~~*` as
+    /// `LIKE`, `ILIKE`, `NOT LIKE` and `NOT ILIKE` pattern-match operators.
+    ///
+    /// When false, `~~` is two `~` tokens, e.g. two bitwise-NOT prefixes.
+    ///
+    /// [PostgreSQL](https://www.postgresql.org/docs/current/functions-matching.html#FUNCTIONS-LIKE),
+    /// [Redshift](https://docs.aws.amazon.com/redshift/latest/dg/r_patternmatching_condition_like.html),
+    /// [DuckDB](https://duckdb.org/docs/current/sql/functions/pattern_matching)
+    fn supports_tilde_like_match_operator(&self) -> bool {
         false
     }
 
@@ -1748,6 +2028,25 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports a `FIRST` or `AFTER col` column
+    /// position in `ALTER TABLE ... ADD | CHANGE | MODIFY COLUMN`.
+    /// Example:
+    ///  ```sql
+    ///  ALTER TABLE tbl ADD COLUMN c INT AFTER b
+    /// ```
+    fn supports_alter_column_position(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect supports `ALTER TABLE ... ADD [COLUMN] IF NOT EXISTS <col>`.
+    /// Example:
+    ///  ```sql
+    ///  ALTER TABLE tbl ADD COLUMN IF NOT EXISTS c INT
+    /// ```
+    fn supports_add_column_if_not_exists(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect considers the specified ident as a function
     /// that returns an identifier. Typically used to generate identifiers
     /// programmatically.
@@ -1776,6 +2075,18 @@ pub trait Dialect: Debug + Any {
     ///
     /// Note that this is canonicalized to `INT(20)`.
     fn supports_data_type_signed_suffix(&self) -> bool {
+        false
+    }
+
+    /// Returns true if this dialect allows an optional `ZEROFILL` suffix after numeric data types.
+    ///
+    /// Example:
+    /// ```sql
+    /// CREATE TABLE t (i INT(10) UNSIGNED ZEROFILL);
+    /// ```
+    ///
+    /// <https://dev.mysql.com/doc/refman/8.4/en/numeric-type-syntax.html>
+    fn supports_data_type_zerofill_suffix(&self) -> bool {
         false
     }
 
@@ -1824,6 +2135,13 @@ pub trait Dialect: Debug + Any {
     /// )
     /// ```
     fn supports_semantic_view_table_factor(&self) -> bool {
+        false
+    }
+
+    /// Returns true if this dialect supports Snowflake-style stages in table factors (e.g. `@stage`).
+    ///
+    /// [Snowflake](https://docs.snowflake.com/en/user-guide/querying-stage)
+    fn supports_stages(&self) -> bool {
         false
     }
 
@@ -2019,6 +2337,19 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if this dialect supports the `PARTITION` clause on a table factor,
+    /// restricting a query to an explicit list of partitions.
+    ///
+    /// Example:
+    /// ```sql
+    /// SELECT * FROM employees PARTITION (p0, p1)
+    /// ```
+    ///
+    /// [MySQL](https://dev.mysql.com/doc/refman/8.4/en/partitioning-selection.html)
+    fn supports_table_partitions(&self) -> bool {
+        false
+    }
+
     /// Returns true if this dialect supports the `FORMAT` clause in `SELECT` statements.
     ///
     /// Example:
@@ -2067,6 +2398,11 @@ pub trait Dialect: Debug + Any {
     ///
     /// [PostgreSQL](https://www.postgresql.org/docs/current/functions-xml.html)
     fn supports_xml_expressions(&self) -> bool {
+        false
+    }
+
+    /// Whether a custom type name may introduce a typed string.
+    fn is_custom_type_typed_string(&self, _first_keyword: Keyword, _qualified: bool) -> bool {
         false
     }
 
@@ -2146,6 +2482,34 @@ pub trait Dialect: Debug + Any {
     ///
     /// [Doris](https://doris.apache.org/docs/sql-manual/basic-element/sql-data-types/semi-structured/VARIANT)
     fn supports_variant_typed_fields(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect accepts `==` as an alternative to `=` in `UPDATE SET` assignments.
+    ///
+    /// See <https://www.sqlite.org/lang_update.html>
+    fn supports_double_eq_assignment(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect supports `CAST(expr AS)` with an empty type name.
+    ///
+    /// Example:
+    /// ```sql
+    /// SELECT CAST(a AS)
+    /// ```
+    ///
+    /// [SQLite](https://www.sqlite.org/lang_expr.html)
+    fn supports_cast_empty_data_type_to_unspecified(&self) -> bool {
+        false
+    }
+
+    /// Returns true if the dialect allows an `ORDER BY` clause inside an aggregate function
+    /// call with no preceding arguments, e.g. `count(ORDER BY a)`.
+    ///
+    /// [SQLite](https://www.sqlite.org/lang_aggfunc.html#aggorderby),
+    /// [DuckDB](https://duckdb.org/docs/current/sql/functions/aggregates#order-by-clause-in-aggregate-functions)
+    fn supports_aggregate_order_by_with_empty_args(&self) -> bool {
         false
     }
 }
@@ -2302,6 +2666,7 @@ mod tests {
                 supports_order_by_all = true,
                 supports_nested_comments = true,
                 supports_triple_quoted_string = true,
+                ordered_bind_placeholder_style = Some(BindPlaceholderStyle::DollarNumbered),
             },
         );
         let dialect = EnhancedGenericDialect::new();
@@ -2309,6 +2674,10 @@ mod tests {
         assert!(dialect.supports_order_by_all());
         assert!(dialect.supports_nested_comments());
         assert!(dialect.supports_triple_quoted_string());
+        assert_eq!(
+            dialect.ordered_bind_placeholder_style(),
+            Some(BindPlaceholderStyle::DollarNumbered)
+        );
 
         let d: &dyn Dialect = &dialect;
         assert!(d.is::<GenericDialect>());
@@ -2339,6 +2708,27 @@ mod tests {
             let actual = dialect.identifier_quote_style(ident);
 
             assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn ordered_bind_placeholder_style() {
+        let tests: Vec<(&dyn Dialect, Option<BindPlaceholderStyle>)> = vec![
+            (&GenericDialect {}, None),
+            (&MySqlDialect {}, Some(BindPlaceholderStyle::QuestionMark)),
+            (
+                &PostgreSqlDialect {},
+                Some(BindPlaceholderStyle::DollarNumbered),
+            ),
+            (
+                &RedshiftSqlDialect {},
+                Some(BindPlaceholderStyle::DollarNumbered),
+            ),
+            (&SQLiteDialect {}, Some(BindPlaceholderStyle::QuestionMark)),
+        ];
+
+        for (dialect, expected) in tests {
+            assert_eq!(dialect.ordered_bind_placeholder_style(), expected);
         }
     }
 
@@ -2376,6 +2766,10 @@ mod tests {
 
             fn identifier_quote_style(&self, identifier: &str) -> Option<char> {
                 self.0.identifier_quote_style(identifier)
+            }
+
+            fn ordered_bind_placeholder_style(&self) -> Option<BindPlaceholderStyle> {
+                self.0.ordered_bind_placeholder_style()
             }
 
             fn supports_string_literal_backslash_escape(&self) -> bool {
@@ -2441,11 +2835,13 @@ mod tests {
             }
         }
 
-        #[allow(clippy::needless_raw_string_hashes)]
-        let statement = r#"SELECT 'Wayne\'s World'"#;
+        let statement = r"SELECT 'Wayne\'s World'";
         let res1 = Parser::parse_sql(&MySqlDialect {}, statement);
         let res2 = Parser::parse_sql(&WrappedDialect(MySqlDialect {}), statement);
-        assert!(res1.is_ok());
-        assert_eq!(res1, res2);
+        assert_eq!(
+            WrappedDialect(MySqlDialect {}).ordered_bind_placeholder_style(),
+            Some(BindPlaceholderStyle::QuestionMark)
+        );
+        assert_eq!(res1.unwrap(), res2.unwrap());
     }
 }

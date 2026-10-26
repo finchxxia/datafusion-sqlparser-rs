@@ -24,6 +24,7 @@ mod test_utils;
 use sqlparser::ast::helpers::attached_token::AttachedToken;
 use sqlparser::ast::*;
 use sqlparser::dialect::{AnsiDialect, Dialect, DorisDialect, GenericDialect};
+use sqlparser::parser::ParserError;
 use sqlparser::tokenizer::Token;
 use test_utils::*;
 
@@ -664,7 +665,12 @@ fn ansi_rejects_doris_key_model() {
     let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
     let sql =
         "CREATE TABLE t (k BIGINT, v STRING) DUPLICATE KEY(k) DISTRIBUTED BY HASH(k) BUCKETS 8";
-    assert!(ansi.parse_sql_statements(sql).is_err());
+    assert_eq!(
+        ansi.parse_sql_statements(sql),
+        Err(ParserError::ParserError(
+            "Expected: end of statement, found: DUPLICATE".to_string()
+        ))
+    );
 }
 
 #[test]
@@ -774,14 +780,24 @@ fn parse_doris_nested_complex_types() {
 fn ansi_rejects_doris_load_data_infile() {
     let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
     let sql = "LOAD DATA LOCAL INFILE 'test' INTO TABLE t PROPERTIES ('timeout' = '100')";
-    assert!(ansi.parse_sql_statements(sql).is_err());
+    assert_eq!(
+        ansi.parse_sql_statements(sql),
+        Err(ParserError::ParserError(
+            "Expected: `DATA` or an extension name after `LOAD`, found: DATA".to_string()
+        ))
+    );
 }
 
 #[test]
 fn ansi_rejects_doris_create_routine_load() {
     let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
     let sql = "CREATE ROUTINE LOAD db.job ON tbl FROM KAFKA ('kafka_topic' = 'topic1')";
-    assert!(ansi.parse_sql_statements(sql).is_err());
+    assert_eq!(
+        ansi.parse_sql_statements(sql),
+        Err(ParserError::ParserError(
+            "Expected: an object type after CREATE, found: ROUTINE".to_string()
+        ))
+    );
 }
 
 #[test]
@@ -1000,9 +1016,12 @@ fn ast_doris_generated_column_as_expr() {
 #[test]
 fn ansi_rejects_doris_column_key_option() {
     let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
-    assert!(ansi
-        .parse_sql_statements("CREATE TABLE t (k INT KEY)")
-        .is_err());
+    assert_eq!(
+        ansi.parse_sql_statements("CREATE TABLE t (k INT KEY)"),
+        Err(ParserError::ParserError(
+            "Expected: ',' or ')' after column definition, found: KEY".to_string()
+        ))
+    );
 }
 #[test]
 fn parse_doris_agg_state_type() {
@@ -1108,12 +1127,18 @@ fn parse_doris_nested_parameterized_types() {
 #[test]
 fn ansi_rejects_doris_parameterized_data_types() {
     let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
-    assert!(ansi
-        .parse_sql_statements("CREATE TABLE t (v AGG_STATE<sum(INT)>)")
-        .is_err());
-    assert!(ansi
-        .parse_sql_statements("CREATE TABLE t (v VARIANT<'a': INT>)")
-        .is_err());
+    assert_eq!(
+        ansi.parse_sql_statements("CREATE TABLE t (v AGG_STATE<sum(INT)>)"),
+        Err(ParserError::ParserError(
+            "Expected: ',' or ')' after column definition, found: <".to_string()
+        ))
+    );
+    assert_eq!(
+        ansi.parse_sql_statements("CREATE TABLE t (v VARIANT<'a': INT>)"),
+        Err(ParserError::ParserError(
+            "Expected: ',' or ')' after column definition, found: <".to_string()
+        ))
+    );
     // The bare names still parse as custom type names.
     ansi.verified_stmt("CREATE TABLE t (v AGG_STATE)");
     ansi.verified_stmt("CREATE TABLE t (v VARIANT)");
@@ -1337,7 +1362,12 @@ fn parse_doris_create_table_trailing_comma() {
 fn ansi_rejects_create_table_trailing_comma() {
     let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
     let sql = "CREATE TABLE t (c VARCHAR(117) NOT NULL,)";
-    assert!(ansi.parse_sql_statements(sql).is_err());
+    assert_eq!(
+        ansi.parse_sql_statements(sql),
+        Err(ParserError::ParserError(
+            "Expected: column name or constraint definition, found: )".to_string()
+        ))
+    );
 }
 
 #[test]
@@ -1394,7 +1424,12 @@ fn ast_doris_ctas_bare_column_list() {
 fn ansi_rejects_ctas_bare_column_list() {
     let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
     let sql = "CREATE TABLE t (a, b) AS SELECT 1, 2";
-    assert!(ansi.parse_sql_statements(sql).is_err());
+    assert_eq!(
+        ansi.parse_sql_statements(sql),
+        Err(ParserError::ParserError(
+            "Expected: a data type name, found: ,".to_string()
+        ))
+    );
 }
 
 #[test]
@@ -2198,12 +2233,19 @@ fn parse_insert_with_label() {
     assert_eq!(label, Some(Ident::new("l")));
     assert_eq!(columns, vec![ObjectName::from(Ident::new("c1"))]);
 
-    assert!(dialects
-        .parse_sql_statements("INSERT INTO t WITH LABEL SELECT * FROM t2")
-        .is_err());
-    assert!(TestedDialects::new(vec![Box::new(GenericDialect {})])
-        .parse_sql_statements("INSERT INTO t WITH LABEL l SELECT * FROM t2")
-        .is_err());
+    assert_eq!(
+        dialects.parse_sql_statements("INSERT INTO t WITH LABEL SELECT * FROM t2"),
+        Err(ParserError::ParserError(
+            "Expected: SELECT, VALUES, or a subquery in the query body, found: *".to_string()
+        ))
+    );
+    assert_eq!(
+        TestedDialects::new(vec![Box::new(GenericDialect {})])
+            .parse_sql_statements("INSERT INTO t WITH LABEL l SELECT * FROM t2"),
+        Err(ParserError::ParserError(
+            "Expected: (, found: l".to_string()
+        ))
+    );
 }
 
 #[test]
@@ -2282,23 +2324,43 @@ fn parse_doris_broker_load_negative() {
     let dialects = all_dialects_where(|d| d.supports_broker_load());
 
     // Missing the parenthesized data_desc list.
-    assert!(dialects.parse_sql_statements("LOAD LABEL l").is_err());
+    assert_eq!(
+        dialects.parse_sql_statements("LOAD LABEL l"),
+        Err(ParserError::ParserError(
+            "Expected: (, found: EOF".to_string()
+        ))
+    );
     // Missing INTO TABLE in a data_desc.
-    assert!(dialects
-        .parse_sql_statements("LOAD LABEL l (DATA INFILE ('f'))")
-        .is_err());
+    assert_eq!(
+        dialects.parse_sql_statements("LOAD LABEL l (DATA INFILE ('f'))"),
+        Err(ParserError::ParserError(
+            "Expected: INTO, found: )".to_string()
+        ))
+    );
     // Empty file list.
-    assert!(dialects
-        .parse_sql_statements("LOAD LABEL l (DATA INFILE () INTO TABLE t)")
-        .is_err());
+    assert_eq!(
+        dialects.parse_sql_statements("LOAD LABEL l (DATA INFILE () INTO TABLE t)"),
+        Err(ParserError::ParserError(
+            "Expected: literal string, found: )".to_string()
+        ))
+    );
     // Unknown source after WITH.
-    assert!(dialects
-        .parse_sql_statements("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t) WITH GCS ('k'='v')")
-        .is_err());
+    assert_eq!(
+        dialects.parse_sql_statements(
+            "LOAD LABEL l (DATA INFILE ('f') INTO TABLE t) WITH GCS ('k'='v')"
+        ),
+        Err(ParserError::ParserError(
+            "Expected: S3, HDFS or BROKER after `WITH`, found: GCS".to_string()
+        ))
+    );
     // Not enabled for other dialects.
-    assert!(TestedDialects::new(vec![Box::new(GenericDialect {})])
-        .parse_sql_statements("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t)")
-        .is_err());
+    assert_eq!(
+        TestedDialects::new(vec![Box::new(GenericDialect {})])
+            .parse_sql_statements("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t)"),
+        Err(ParserError::ParserError(
+            "Expected: end of statement, found: l".to_string()
+        ))
+    );
 }
 
 #[test]
@@ -2347,15 +2409,24 @@ fn parse_doris_broker_load_data_desc_negative() {
     let dialects = all_dialects_where(|d| d.supports_broker_load());
 
     // Merge type must be followed by DATA INFILE.
-    assert!(dialects
-        .parse_sql_statements("LOAD LABEL l (MERGE INTO TABLE t)")
-        .is_err());
+    assert_eq!(
+        dialects.parse_sql_statements("LOAD LABEL l (MERGE INTO TABLE t)"),
+        Err(ParserError::ParserError(
+            "Expected: DATA, found: INTO".to_string()
+        ))
+    );
     // SET requires a parenthesized assignment list.
-    assert!(dialects
-        .parse_sql_statements("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t SET k = c1)")
-        .is_err());
+    assert_eq!(
+        dialects.parse_sql_statements("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t SET k = c1)"),
+        Err(ParserError::ParserError(
+            "Expected: (, found: k".to_string()
+        ))
+    );
     // DELETE ON requires an expression.
-    assert!(dialects
-        .parse_sql_statements("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t DELETE ON)")
-        .is_err());
+    assert_eq!(
+        dialects.parse_sql_statements("LOAD LABEL l (DATA INFILE ('f') INTO TABLE t DELETE ON)"),
+        Err(ParserError::ParserError(
+            "Expected: an expression, found: )".to_string()
+        ))
+    );
 }

@@ -75,14 +75,19 @@ fn parse_table_time_travel() {
                 with_ordinality: false,
                 json_path: None,
                 sample: None,
-                index_hints: vec![]
+                index_directives: vec![]
             },
             joins: vec![]
         },]
     );
 
     let sql = "SELECT 1 FROM t1 FOR SYSTEM TIME AS OF 'some_timestamp'".to_string();
-    assert!(ms().parse_sql_statements(&sql).is_err());
+    assert_eq!(
+        ms().parse_sql_statements(&sql),
+        Err(ParserError::ParserError(
+            "Expected: one of UPDATE or SHARE, found: SYSTEM".to_owned()
+        ))
+    );
 }
 
 #[test]
@@ -490,7 +495,7 @@ fn parse_mssql_openjson() {
                 partitions: vec![],
                 json_path: None,
                 sample: None,
-                index_hints: vec![]
+                index_directives: vec![]
             },
             joins: vec![Join {
                 relation: TableFactor::OpenJsonTable {
@@ -544,7 +549,7 @@ fn parse_mssql_openjson() {
                 partitions: vec![],
                 json_path: None,
                 sample: None,
-                index_hints: vec![]
+                index_directives: vec![]
             },
             joins: vec![Join {
                 relation: TableFactor::OpenJsonTable {
@@ -598,7 +603,7 @@ fn parse_mssql_openjson() {
                 partitions: vec![],
                 json_path: None,
                 sample: None,
-                index_hints: vec![]
+                index_directives: vec![]
             },
             joins: vec![Join {
                 relation: TableFactor::OpenJsonTable {
@@ -652,7 +657,7 @@ fn parse_mssql_openjson() {
                 partitions: vec![],
                 json_path: None,
                 sample: None,
-                index_hints: vec![],
+                index_directives: vec![],
             },
             joins: vec![Join {
                 relation: TableFactor::OpenJsonTable {
@@ -686,7 +691,7 @@ fn parse_mssql_openjson() {
                 partitions: vec![],
                 json_path: None,
                 sample: None,
-                index_hints: vec![],
+                index_directives: vec![],
             },
             joins: vec![Join {
                 relation: TableFactor::OpenJsonTable {
@@ -955,9 +960,12 @@ fn parse_for_clause() {
 
 #[test]
 fn dont_parse_trailing_for() {
-    assert!(ms()
-        .run_parser_method("SELECT * FROM foo FOR", |p| p.parse_query())
-        .is_err());
+    assert_eq!(
+        ms().run_parser_method("SELECT * FROM foo FOR", |p| p.parse_query()),
+        Err(ParserError::ParserError(
+            "Expected: one of UPDATE or SHARE, found: EOF".to_owned()
+        ))
+    );
 }
 
 #[test]
@@ -1473,7 +1481,8 @@ fn parse_mssql_declare() {
                     or_replace: false,
                     variable_keyword: None
                 }
-            ]
+            ],
+            separator: DeclareSeparator::Comma,
         }],
         ast
     );
@@ -1495,7 +1504,8 @@ fn parse_mssql_declare() {
                     for_query: None,
                     or_replace: false,
                     variable_keyword: None
-                }]
+                }],
+                separator: DeclareSeparator::Comma,
             },
             Statement::Set(Set::SingleAssignment {
                 scope: None,
@@ -1745,7 +1755,12 @@ fn test_parse_waitfor() {
 
     // Error: WAITFOR without DELAY or TIME
     let res = ms_and_generic().parse_sql_statements("WAITFOR '00:00:05'");
-    assert!(res.is_err());
+    assert_eq!(
+        res,
+        Err(ParserError::ParserError(
+            "Expected: DELAY or TIME, found: '00:00:05'".to_owned()
+        ))
+    );
 }
 
 #[test]
@@ -1979,7 +1994,7 @@ fn parse_create_table_with_valid_options() {
                 file_format: None,
                 location: None,
                 query: None,
-                without_rowid: false,
+                sqlite_table_options: Default::default(),
                 like: None,
                 clone: None,
                 comment: None,
@@ -1994,7 +2009,6 @@ fn parse_create_table_with_valid_options() {
                 inherits: None,
                 partition_of: None,
                 for_values: None,
-                strict: false,
                 iceberg: false,
                 snapshot: false,
                 copy_grants: false,
@@ -2161,7 +2175,7 @@ fn parse_create_table_with_identity_column() {
                 file_format: None,
                 location: None,
                 query: None,
-                without_rowid: false,
+                sqlite_table_options: Default::default(),
                 like: None,
                 clone: None,
                 comment: None,
@@ -2176,7 +2190,6 @@ fn parse_create_table_with_identity_column() {
                 inherits: None,
                 partition_of: None,
                 for_values: None,
-                strict: false,
                 copy_grants: false,
                 enable_schema_evolution: None,
                 change_tracking: None,
@@ -2642,26 +2655,62 @@ ELSE
 #[test]
 fn test_sql_keywords_as_table_aliases() {
     // Some keywords that should not be parsed as an alias implicitly or explicitly
-    let reserved_kws = vec!["IF", "ELSE"];
-    for kw in reserved_kws {
-        for explicit in &["", "AS "] {
-            assert!(tsql()
-                .parse_sql_statements(&format!("SELECT * FROM tbl {explicit}{kw}"))
-                .is_err());
-        }
+    for (sql, err) in [
+        (
+            "SELECT * FROM tbl IF",
+            "Expected: an expression, found: EOF",
+        ),
+        (
+            "SELECT * FROM tbl AS IF",
+            "Expected: an identifier after AS, found: IF",
+        ),
+        (
+            "SELECT * FROM tbl ELSE",
+            "Expected: an SQL statement, found: ELSE",
+        ),
+        (
+            "SELECT * FROM tbl AS ELSE",
+            "Expected: an identifier after AS, found: ELSE",
+        ),
+    ] {
+        assert_eq!(
+            tsql().parse_sql_statements(sql),
+            Err(ParserError::ParserError(err.to_owned()))
+        );
     }
+}
+
+#[test]
+fn parse_non_reserved_keyword_table_names() {
+    ms().verified_stmt("SELECT * FROM limit");
+    ms().verified_stmt("SELECT * FROM t JOIN limit ON true");
 }
 
 #[test]
 fn test_sql_keywords_as_column_aliases() {
     // Some keywords that should not be parsed as an alias implicitly or explicitly
-    let reserved_kws = vec!["IF", "ELSE"];
-    for kw in reserved_kws {
-        for explicit in &["", "AS "] {
-            assert!(tsql()
-                .parse_sql_statements(&format!("SELECT col {explicit}{kw} FROM tbl"))
-                .is_err());
-        }
+    for (sql, err) in [
+        (
+            "SELECT col IF FROM tbl",
+            "Expected: an SQL statement, found: tbl",
+        ),
+        (
+            "SELECT col AS IF FROM tbl",
+            "Expected: an identifier after AS, found: IF",
+        ),
+        (
+            "SELECT col ELSE FROM tbl",
+            "Expected: an SQL statement, found: ELSE",
+        ),
+        (
+            "SELECT col AS ELSE FROM tbl",
+            "Expected: an identifier after AS, found: ELSE",
+        ),
+    ] {
+        assert_eq!(
+            tsql().parse_sql_statements(sql),
+            Err(ParserError::ParserError(err.to_owned()))
+        );
     }
 }
 
@@ -2950,4 +2999,33 @@ fn parse_bracket_quoted_function_argument_name() {
             default_expr: None,
         }])
     );
+}
+
+#[test]
+fn parse_bracket_quoted_eq_alias_assignment() {
+    ms().one_statement_parses_to("SELECT a = [from] FROM t", "SELECT [from] AS a FROM t");
+}
+
+#[test]
+fn parse_create_proc() {
+    ms().one_statement_parses_to(
+        "CREATE PROC test AS BEGIN SELECT 1; END",
+        "CREATE PROCEDURE test AS BEGIN SELECT 1; END",
+    );
+    ms().one_statement_parses_to(
+        "CREATE OR ALTER PROC test AS BEGIN SELECT 1; END",
+        "CREATE OR ALTER PROCEDURE test AS BEGIN SELECT 1; END",
+    );
+
+    TestedDialects::new(vec![Box::new(GenericDialect {})])
+        .parse_sql_statements("CREATE PROC test AS BEGIN SELECT 1; END")
+        .expect_err("PROC should remain MSSQL-specific");
+    ms_and_generic().verified_stmt("SELECT proc FROM jobs");
+}
+
+#[test]
+fn parse_mssql_declare_comma_list_display() {
+    ms().verified_stmt("DECLARE @a INT, @b INT");
+    ms().verified_stmt("DECLARE @a INT = 1, @b TEXT = 'x'");
+    ms().verified_stmt("DECLARE @foo CURSOR, @bar INT");
 }

@@ -171,6 +171,55 @@ fn test_div_literal() {
     spark().one_statement_parses_to("SELECT 10 div 3", "SELECT 10 DIV 3");
 }
 
+#[test]
+fn test_div_precedence() {
+    let div = |left: Expr, right: Expr| Expr::BinaryOp {
+        left: Box::new(left),
+        op: BinaryOperator::MyIntegerDivide,
+        right: Box::new(right),
+    };
+    let num = |n: &str| Expr::value(number(n));
+
+    // `DIV` shares the precedence of `*` and `/`, so `+` must end up at the root.
+    assert_eq!(
+        Expr::BinaryOp {
+            left: Box::new(div(num("7"), num("2"))),
+            op: BinaryOperator::Plus,
+            right: Box::new(num("1")),
+        },
+        spark().verified_expr("7 DIV 2 + 1")
+    );
+
+    // Equal precedence resolves left-associatively.
+    assert_eq!(
+        Expr::BinaryOp {
+            left: Box::new(div(num("9"), num("3"))),
+            op: BinaryOperator::Multiply,
+            right: Box::new(num("3")),
+        },
+        spark().verified_expr("9 DIV 3 * 3")
+    );
+}
+
+// Spark is not part of all_dialects, so the between low bound comparison is pinned here.
+
+#[test]
+fn parse_comparison_in_between_low_bound() {
+    match spark().verified_expr("a BETWEEN b > 1 AND c") {
+        Expr::Between { low, .. } => assert!(
+            matches!(
+                &*low,
+                Expr::BinaryOp {
+                    op: BinaryOperator::Gt,
+                    ..
+                }
+            ),
+            "{low:?}"
+        ),
+        other => panic!("expected BETWEEN, got {other:?}"),
+    }
+}
+
 // --------------------------------
 // Struct support
 // --------------------------------
@@ -347,7 +396,7 @@ fn parse_declare_session_variable() {
     spark().verified_stmt("DECLARE process_start_at = 1");
 
     match spark().verified_stmt("DECLARE OR REPLACE VARIABLE process_start_at TIMESTAMP") {
-        Statement::Declare { mut stmts } => {
+        Statement::Declare { mut stmts, .. } => {
             assert_eq!(1, stmts.len());
             let stmt = stmts.swap_remove(0);
             assert!(stmt.or_replace);
@@ -366,7 +415,7 @@ fn parse_declare_session_variable() {
     }
 
     match spark().verified_stmt("DECLARE VAR process_start_at TIMESTAMP = 1") {
-        Statement::Declare { mut stmts } => {
+        Statement::Declare { mut stmts, .. } => {
             let stmt = stmts.swap_remove(0);
             assert!(!stmt.or_replace);
             assert_eq!(Some(SessionVariableKeyword::Var), stmt.variable_keyword);

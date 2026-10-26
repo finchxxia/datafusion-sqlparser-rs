@@ -24,6 +24,10 @@ use crate::dialect::Dialect;
 pub struct GenericDialect;
 
 impl Dialect for GenericDialect {
+    fn supports_map_typedef_with_parentheses(&self) -> bool {
+        true
+    }
+
     fn is_delimited_identifier_start(&self, ch: char) -> bool {
         ch == '"' || ch == '`'
     }
@@ -42,6 +46,10 @@ impl Dialect for GenericDialect {
     }
 
     fn supports_unicode_string_literal(&self) -> bool {
+        true
+    }
+
+    fn supports_literal_prefix_in_qualified_name(&self) -> bool {
         true
     }
 
@@ -173,6 +181,30 @@ impl Dialect for GenericDialect {
         true
     }
 
+    fn supports_singular_value_keyword(&self) -> bool {
+        true
+    }
+
+    fn supports_comma_join_constraint(&self) -> bool {
+        true
+    }
+
+    fn supports_tilde_like_match_operator(&self) -> bool {
+        true
+    }
+
+    fn supports_aggregate_order_by_with_empty_args(&self) -> bool {
+        true
+    }
+
+    fn supports_in_table_expression(&self) -> bool {
+        true
+    }
+
+    fn supports_comparison_in_between_low_bound(&self) -> bool {
+        true
+    }
+
     fn supports_comment_on(&self) -> bool {
         true
     }
@@ -277,6 +309,10 @@ impl Dialect for GenericDialect {
         true
     }
 
+    fn supports_copy_from_stdin_data(&self) -> bool {
+        true
+    }
+
     fn supports_user_host_grantee(&self) -> bool {
         true
     }
@@ -310,6 +346,10 @@ impl Dialect for GenericDialect {
     }
 
     fn supports_data_type_signed_suffix(&self) -> bool {
+        true
+    }
+
+    fn supports_data_type_zerofill_suffix(&self) -> bool {
         true
     }
 
@@ -365,6 +405,10 @@ impl Dialect for GenericDialect {
         true
     }
 
+    fn supports_table_partitions(&self) -> bool {
+        true
+    }
+
     fn supports_select_format(&self) -> bool {
         true
     }
@@ -414,6 +458,14 @@ impl Dialect for GenericDialect {
     }
 
     fn supports_variant_typed_fields(&self) -> bool {
+        true
+    }
+
+    fn supports_alter_column_position(&self) -> bool {
+        true
+    }
+
+    fn supports_add_column_if_not_exists(&self) -> bool {
         true
     }
 }

@@ -44,6 +44,29 @@ pub enum EnumMember {
     NamedValue(String, Expr),
 }
 
+/// One entry of a custom data type's parenthesized modifier list.
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum TypeModifier {
+    /// Identifier or keyword segment, quotes carried by `Ident`.
+    Identifier(Ident),
+    /// Numeric literal, the `bool` carries the `L` long suffix like `Value::Number`.
+    Number(String, bool),
+    /// Single quoted string literal.
+    String(String),
+}
+
+impl fmt::Display for TypeModifier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Identifier(id) => write!(f, "{id}"),
+            Self::Number(n, long) => write!(f, "{}{long}", n, long = if *long { "L" } else { "" }),
+            Self::String(s) => write!(f, "'{}'", escape_single_quote_string(s)),
+        }
+    }
+}
+
 /// SQL data types
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -348,6 +371,10 @@ pub enum DataType {
     ///
     /// [MySQL]: https://dev.mysql.com/doc/refman/8.4/en/numeric-type-syntax.html
     DoublePrecisionUnsigned,
+    /// [MySQL] numeric type padded with zeros, e.g. `INT(10) UNSIGNED ZEROFILL`.
+    ///
+    /// [MySQL]: https://dev.mysql.com/doc/refman/8.4/en/numeric-type-syntax.html
+    Zerofill(Box<DataType>),
     /// Bool is an alias for Boolean, see [PostgreSQL].
     ///
     /// [PostgreSQL]: https://www.postgresql.org/docs/current/datatype.html
@@ -415,6 +442,8 @@ pub enum DataType {
     LongText,
     /// String with optional length.
     String(Option<u64>),
+    /// A data type with an explicit collation, as supported by Databricks.
+    Collate(Box<DataType>, ObjectName),
     /// A fixed-length string e.g [ClickHouse][1].
     ///
     /// [1]: https://clickhouse.com/docs/en/sql-reference/data-types/fixedstring
@@ -437,8 +466,8 @@ pub enum DataType {
     ///
     /// [PostgreSQL]: https://www.postgresql.org/docs/current/datatype.html
     VarBit(Option<u64>),
-    /// Custom types.
-    Custom(ObjectName, Vec<String>),
+    /// Custom type with a modifier list, e.g. `GEOMETRY(POINT, 4326)`.
+    Custom(ObjectName, Vec<TypeModifier>),
     /// Arrays.
     Array(ArrayElemTypeDef),
     /// Map, see [ClickHouse], [Hive].
@@ -454,6 +483,10 @@ pub enum DataType {
     ///
     /// [ClickHouse]: https://clickhouse.com/docs/en/sql-reference/data-types/nested-data-structures/nested
     Nested(Vec<ColumnDef>),
+    /// Structured object type, see [Snowflake].
+    ///
+    /// [Snowflake]: https://docs.snowflake.com/en/sql-reference/data-types-structured#structured-object-types
+    Object(Vec<ColumnDef>),
     /// Enum type.
     Enum(Vec<EnumMember>, Option<u8>),
     /// Set type.
@@ -688,6 +721,7 @@ impl fmt::Display for DataType {
             DataType::Float8 => write!(f, "FLOAT8"),
             DataType::DoublePrecision => write!(f, "DOUBLE PRECISION"),
             DataType::DoublePrecisionUnsigned => write!(f, "DOUBLE PRECISION UNSIGNED"),
+            DataType::Zerofill(data_type) => write!(f, "{data_type} ZEROFILL"),
             DataType::Bool => write!(f, "BOOL"),
             DataType::Boolean => write!(f, "BOOLEAN"),
             DataType::Date => write!(f, "DATE"),
@@ -730,6 +764,9 @@ impl fmt::Display for DataType {
             DataType::MediumText => write!(f, "MEDIUMTEXT"),
             DataType::LongText => write!(f, "LONGTEXT"),
             DataType::String(size) => format_type_with_optional_length(f, "STRING", size, false),
+            DataType::Collate(data_type, collation) => {
+                write!(f, "{data_type} COLLATE {collation}")
+            }
             DataType::Bytea => write!(f, "BYTEA"),
             DataType::Bit(size) => format_type_with_optional_length(f, "BIT", size, false),
             DataType::BitVarying(size) => {
@@ -742,6 +779,9 @@ impl fmt::Display for DataType {
                 ArrayElemTypeDef::SquareBracket(t, Some(size)) => write!(f, "{t}[{size}]"),
                 ArrayElemTypeDef::AngleBracket(t) => write!(f, "ARRAY<{t}>"),
                 ArrayElemTypeDef::Parenthesis(t) => write!(f, "Array({t})"),
+                ArrayElemTypeDef::ParenthesisNotNull(t) => {
+                    write!(f, "ARRAY({t} NOT NULL)")
+                }
                 ArrayElemTypeDef::Qualified(t, None) => write!(f, "{t} ARRAY"),
                 ArrayElemTypeDef::Qualified(t, Some(size)) => write!(f, "{t} ARRAY[{size}]"),
             },
@@ -749,7 +789,7 @@ impl fmt::Display for DataType {
                 if modifiers.is_empty() {
                     write!(f, "{ty}")
                 } else {
-                    write!(f, "{}({})", ty, modifiers.join(", "))
+                    write!(f, "{ty}({})", display_comma_separated(modifiers))
                 }
             }
             DataType::Enum(vals, bits) => {
@@ -814,6 +854,9 @@ impl fmt::Display for DataType {
                 MapBracketKind::Parentheses => {
                     write!(f, "Map({key_data_type}, {value_data_type})")
                 }
+                MapBracketKind::ParenthesesNotNull => {
+                    write!(f, "MAP({key_data_type}, {value_data_type} NOT NULL)")
+                }
                 MapBracketKind::AngleBrackets => {
                     write!(f, "MAP<{key_data_type}, {value_data_type}>")
                 }
@@ -823,6 +866,9 @@ impl fmt::Display for DataType {
             }
             DataType::Nested(fields) => {
                 write!(f, "Nested({})", display_comma_separated(fields))
+            }
+            DataType::Object(fields) => {
+                write!(f, "OBJECT({})", display_comma_separated(fields))
             }
             DataType::Unspecified => Ok(()),
             DataType::Trigger => write!(f, "TRIGGER"),
@@ -969,6 +1015,8 @@ pub enum StructBracketKind {
 pub enum MapBracketKind {
     /// Example: `Map(String, UInt16)`
     Parentheses,
+    /// Example: `MAP(VARCHAR, NUMBER NOT NULL)`
+    ParenthesesNotNull,
     /// Example: `MAP<STRING, INT>`
     AngleBrackets,
 }
@@ -1215,6 +1263,8 @@ pub enum ArrayElemTypeDef {
     SquareBracket(Box<DataType>, Option<u64>),
     /// Parenthesis style, e.g. `Array(Int64)`.
     Parenthesis(Box<DataType>),
+    /// Parenthesis style with a non-null element constraint, e.g. `ARRAY(INT NOT NULL)`.
+    ParenthesisNotNull(Box<DataType>),
     /// Qualified by a data type and optional size, e.g. `INT ARRAY` or `INT ARRAY[4]`.
     Qualified(Box<DataType>, Option<u64>),
 }

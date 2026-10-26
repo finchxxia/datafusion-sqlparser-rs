@@ -39,8 +39,7 @@ use sqlparser::dialect::{
 };
 use sqlparser::keywords::{Keyword, ALL_KEYWORDS};
 use sqlparser::parser::{Parser, ParserError, ParserOptions};
-use sqlparser::tokenizer::Tokenizer;
-use sqlparser::tokenizer::{Location, Span};
+use sqlparser::tokenizer::{Location, Span, Token, Tokenizer, Whitespace};
 use test_utils::{
     all_dialects, all_dialects_where, all_dialects_with_options, alter_table_op, assert_eq_vec,
     call, expr_from_projection, join, number, only, table, table_alias, table_from_name,
@@ -161,7 +160,9 @@ fn parse_insert_values() {
         expected_rows: &[Parens<Vec<Expr>>],
         expected_value_keyword: bool,
     ) {
-        match verified_stmt(sql) {
+        let dialects =
+            all_dialects_where(|d| !expected_value_keyword || d.supports_singular_value_keyword());
+        match dialects.verified_stmt(sql) {
             Statement::Insert(Insert {
                 table: table_name,
                 columns,
@@ -183,7 +184,7 @@ fn parse_insert_values() {
                         ..
                     }) => {
                         assert_eq!(rows.as_slice(), expected_rows);
-                        assert!(value_keyword == expected_value_keyword);
+                        assert_eq!(value_keyword, expected_value_keyword);
                     }
                     _ => unreachable!(),
                 }
@@ -193,6 +194,44 @@ fn parse_insert_values() {
     }
 
     verified_stmt("INSERT INTO customer WITH foo AS (SELECT 1) SELECT * FROM foo UNION VALUES (1)");
+}
+
+#[test]
+fn parse_singular_value_keyword() {
+    let sql = "INSERT INTO t (a) VALUE (1)";
+    all_dialects_where(|d| d.supports_singular_value_keyword()).verified_stmt(sql);
+    assert_eq!(
+        all_dialects_where(|d| !d.supports_singular_value_keyword()).parse_sql_statements(sql),
+        Err(ParserError::ParserError(
+            "Expected: SELECT, VALUES, or a subquery in the query body, found: VALUE".to_string()
+        ))
+    );
+
+    // Dialects with `INSERT` table aliases consume `VALUE` as an alias without a column list.
+    let sql = "INSERT INTO t VALUE (1)";
+    all_dialects_where(|d| d.supports_singular_value_keyword()).verified_stmt(sql);
+    let without_table_alias = all_dialects_where(|d| {
+        !d.supports_singular_value_keyword() && !d.supports_insert_table_alias()
+    });
+    assert_eq!(
+        without_table_alias.parse_sql_statements(sql),
+        Err(ParserError::ParserError(
+            "Expected: SELECT, VALUES, or a subquery in the query body, found: VALUE".to_string()
+        ))
+    );
+    let with_table_alias = all_dialects_where(|d| {
+        !d.supports_singular_value_keyword() && d.supports_insert_table_alias()
+    });
+    assert_eq!(
+        with_table_alias.parse_sql_statements(sql),
+        Err(ParserError::ParserError(
+            "Expected: identifier, found: 1".to_string()
+        ))
+    );
+
+    let dialects = all_dialects_where(|d| d.supports_singular_value_keyword());
+    dialects.verified_stmt("SELECT 1 UNION VALUE (2)");
+    dialects.verified_stmt("WITH c AS (VALUE (1)) SELECT * FROM c");
 }
 
 #[test]
@@ -489,6 +528,7 @@ fn parse_update_set_from() {
                 relation: table_from_name(ObjectName::from(vec![Ident::new("t1")])),
                 joins: vec![],
             },
+            on_cluster: None,
             assignments: vec![Assignment {
                 target: AssignmentTarget::ColumnName(ObjectName::from(vec![Ident::new("name")])),
                 value: Expr::CompoundIdentifier(vec![Ident::new("t2"), Ident::new("name")])
@@ -562,7 +602,8 @@ fn parse_update_set_from() {
             output: None,
             or: None,
             order_by: vec![],
-            limit: None
+            limit: None,
+            settings: None,
         })
     );
 
@@ -586,6 +627,8 @@ fn parse_update_with_table_alias() {
             optimizer_hints,
             update_token: _,
             output: _,
+            on_cluster: None,
+            settings: None,
         }) if optimizer_hints.is_empty() => {
             assert_eq!(
                 TableWithJoins {
@@ -599,7 +642,7 @@ fn parse_update_with_table_alias() {
                         with_ordinality: false,
                         json_path: None,
                         sample: None,
-                        index_hints: vec![],
+                        index_directives: vec![],
                     },
                     joins: vec![],
                 },
@@ -701,7 +744,7 @@ fn parse_select_with_table_alias() {
                 with_ordinality: false,
                 json_path: None,
                 sample: None,
-                index_hints: vec![],
+                index_directives: vec![],
             },
             joins: vec![],
         }]
@@ -719,13 +762,21 @@ fn parse_invalid_table_name() {
     let ast = all_dialects().run_parser_method("db.public..customer", |parser| {
         parser.parse_object_name(false)
     });
-    assert!(ast.is_err());
+    assert_eq!(
+        ParserError::ParserError(
+            "Expected: identifier, found: . at Line: 1, Column: 11".to_string()
+        ),
+        ast.unwrap_err()
+    );
 }
 
 #[test]
 fn parse_no_table_name() {
     let ast = all_dialects().run_parser_method("", |parser| parser.parse_object_name(false));
-    assert!(ast.is_err());
+    assert_eq!(
+        ParserError::ParserError("Expected: identifier, found: EOF".to_string()),
+        ast.unwrap_err()
+    );
 }
 
 #[test]
@@ -899,7 +950,7 @@ fn parse_where_delete_with_alias_statement() {
                     with_ordinality: false,
                     json_path: None,
                     sample: None,
-                    index_hints: vec![],
+                    index_directives: vec![],
                 },
                 from[0].relation,
             );
@@ -915,7 +966,7 @@ fn parse_where_delete_with_alias_statement() {
                         with_ordinality: false,
                         json_path: None,
                         sample: None,
-                        index_hints: vec![],
+                        index_directives: vec![],
                     },
                     joins: vec![],
                 }]),
@@ -1207,10 +1258,10 @@ fn parse_select_wildcard() {
 
 #[test]
 fn parse_count_wildcard() {
-    verified_only_select("SELECT COUNT(*) FROM Order WHERE id = 10");
+    verified_only_select("SELECT COUNT(*) FROM orders WHERE id = 10");
 
     verified_only_select(
-        "SELECT COUNT(Employee.*) FROM Order JOIN Employee ON Order.employee = Employee.id",
+        "SELECT COUNT(Employee.*) FROM orders JOIN Employee ON orders.employee = Employee.id",
     );
 }
 
@@ -2253,12 +2304,13 @@ fn parse_not_precedence() {
         verified_expr(sql),
         Expr::UnaryOp {
             op: UnaryOperator::Not,
-            expr: Box::new(Expr::InList {
+            expr: Box::new(Expr::In {
                 expr: Box::new(Expr::Identifier("a".into())),
-                list: vec![Expr::Value(
+                target: InTarget::List(vec![Expr::Value(
                     (Value::SingleQuotedString("a".into())).with_empty_span()
-                )],
+                )]),
                 negated: true,
+                global: false,
             }),
         },
     );
@@ -2341,7 +2393,9 @@ fn parse_ilike() {
                 pattern: Box::new(Expr::Value(
                     (Value::SingleQuotedString("%a".to_string())).with_empty_span()
                 )),
-                escape_char: Some(Value::SingleQuotedString('^'.to_string()).with_empty_span()),
+                escape_char: Some(Box::new(Expr::value(
+                    Value::SingleQuotedString('^'.to_string()).with_empty_span(),
+                ))),
                 any: false,
             },
             select.selection.unwrap()
@@ -2369,6 +2423,37 @@ fn parse_ilike() {
     }
     chk(false);
     chk(true);
+}
+
+#[test]
+fn parse_tilde_like_match_operators() {
+    let like_match = all_dialects_where(|d| d.supports_tilde_like_match_operator());
+    for (op, expected) in [
+        ("~~", BinaryOperator::PGLikeMatch),
+        ("~~*", BinaryOperator::PGILikeMatch),
+        ("!~~", BinaryOperator::PGNotLikeMatch),
+        ("!~~*", BinaryOperator::PGNotILikeMatch),
+    ] {
+        let select = like_match.verified_only_select(&format!("SELECT a {op} b"));
+        assert_eq!(
+            select.projection[0],
+            SelectItem::UnnamedExpr(Expr::BinaryOp {
+                left: Box::new(Expr::Identifier(Ident::new("a"))),
+                op: expected,
+                right: Box::new(Expr::Identifier(Ident::new("b"))),
+            })
+        );
+    }
+    assert_eq!(
+        like_match.parse_sql_statements("SELECT ~~a"),
+        Err(ParserError::ParserError(
+            "Expected: an expression, found: ~~".to_string()
+        ))
+    );
+
+    let bitwise_not = all_dialects_where(|d| !d.supports_tilde_like_match_operator());
+    bitwise_not.one_statement_parses_to("SELECT ~~a", "SELECT ~ ~ a");
+    bitwise_not.one_statement_parses_to("SELECT ~~~a", "SELECT ~ ~ ~ a");
 }
 
 #[test]
@@ -2405,7 +2490,9 @@ fn parse_like() {
                 pattern: Box::new(Expr::Value(
                     (Value::SingleQuotedString("%a".to_string())).with_empty_span()
                 )),
-                escape_char: Some(Value::SingleQuotedString('^'.to_string()).with_empty_span()),
+                escape_char: Some(Box::new(Expr::value(
+                    Value::SingleQuotedString('^'.to_string()).with_empty_span(),
+                ))),
                 any: false,
             },
             select.selection.unwrap()
@@ -2433,6 +2520,11 @@ fn parse_like() {
     }
     chk(false);
     chk(true);
+}
+
+#[test]
+fn parse_like_escape_expression() {
+    verified_expr("'a%' LIKE 'a#%' ESCAPE ('' || '#')");
 }
 
 #[test]
@@ -2468,7 +2560,9 @@ fn parse_similar_to() {
                 pattern: Box::new(Expr::Value(
                     (Value::SingleQuotedString("%a".to_string())).with_empty_span()
                 )),
-                escape_char: Some(Value::SingleQuotedString('^'.to_string()).with_empty_span()),
+                escape_char: Some(Box::new(Expr::value(
+                    Value::SingleQuotedString('^'.to_string()).with_empty_span(),
+                ))),
             },
             select.selection.unwrap()
         );
@@ -2485,7 +2579,7 @@ fn parse_similar_to() {
                 pattern: Box::new(Expr::Value(
                     (Value::SingleQuotedString("%a".to_string())).with_empty_span()
                 )),
-                escape_char: Some(Value::Null.with_empty_span()),
+                escape_char: Some(Box::new(Expr::value(Value::Null.with_empty_span()))),
             },
             select.selection.unwrap()
         );
@@ -2503,7 +2597,9 @@ fn parse_similar_to() {
                 pattern: Box::new(Expr::Value(
                     (Value::SingleQuotedString("%a".to_string())).with_empty_span()
                 )),
-                escape_char: Some(Value::SingleQuotedString('^'.to_string()).with_empty_span()),
+                escape_char: Some(Box::new(Expr::value(
+                    Value::SingleQuotedString('^'.to_string()).with_empty_span(),
+                ))),
             })),
             select.selection.unwrap()
         );
@@ -2521,13 +2617,14 @@ fn parse_in_list() {
         );
         let select = verified_only_select(sql);
         assert_eq!(
-            Expr::InList {
+            Expr::In {
                 expr: Box::new(Expr::Identifier(Ident::new("segment"))),
-                list: vec![
+                target: InTarget::List(vec![
                     Expr::Value((Value::SingleQuotedString("HIGH".to_string())).with_empty_span()),
                     Expr::Value((Value::SingleQuotedString("MED".to_string())).with_empty_span()),
-                ],
+                ]),
                 negated,
+                global: false,
             },
             select.selection.unwrap()
         );
@@ -2541,10 +2638,11 @@ fn parse_in_subquery() {
     let sql = "SELECT * FROM customers WHERE segment IN (SELECT segm FROM bar)";
     let select = verified_only_select(sql);
     assert_eq!(
-        Expr::InSubquery {
+        Expr::In {
             expr: Box::new(Expr::Identifier(Ident::new("segment"))),
-            subquery: Box::new(verified_query("SELECT segm FROM bar")),
+            target: InTarget::Subquery(Box::new(verified_query("SELECT segm FROM bar"))),
             negated: false,
+            global: false,
         },
         select.selection.unwrap()
     );
@@ -2555,12 +2653,13 @@ fn parse_in_union() {
     let sql = "SELECT * FROM customers WHERE segment IN ((SELECT segm FROM bar) UNION (SELECT segm FROM bar2))";
     let select = verified_only_select(sql);
     assert_eq!(
-        Expr::InSubquery {
+        Expr::In {
             expr: Box::new(Expr::Identifier(Ident::new("segment"))),
-            subquery: Box::new(verified_query(
+            target: InTarget::Subquery(Box::new(verified_query(
                 "(SELECT segm FROM bar) UNION (SELECT segm FROM bar2)"
-            )),
+            ))),
             negated: false,
+            global: false,
         },
         select.selection.unwrap()
     );
@@ -2575,10 +2674,11 @@ fn parse_in_unnest() {
         );
         let select = verified_only_select(sql);
         assert_eq!(
-            Expr::InUnnest {
+            Expr::In {
                 expr: Box::new(Expr::Identifier(Ident::new("segment"))),
-                array_expr: Box::new(verified_expr("expr")),
+                target: InTarget::Unnest(Box::new(verified_expr("expr"))),
                 negated,
+                global: false,
             },
             select.selection.unwrap()
         );
@@ -2592,8 +2692,10 @@ fn parse_in_error() {
     // <expr> IN <expr> is no valid, except in dialects that accept an
     // unparenthesized expression as the IN right-hand side (e.g. ClickHouse).
     let sql = "SELECT * FROM customers WHERE segment in segment";
-    let res =
-        all_dialects_except(|d| d.supports_in_unparenthesized_expr()).parse_sql_statements(sql);
+    let res = all_dialects_except(|d| {
+        d.supports_in_unparenthesized_expr() || d.supports_in_table_expression()
+    })
+    .parse_sql_statements(sql);
     assert_eq!(
         ParserError::ParserError("Expected: (, found: segment".to_string()),
         res.unwrap_err()
@@ -2610,6 +2712,130 @@ fn parse_in_unparenthesized_expr() {
     // The branch must not fire when the next token is `(` (regressions).
     dialects.verified_expr("x IN (1, 2, 3)");
     dialects.verified_stmt("SELECT * FROM t WHERE x IN (SELECT y FROM u)");
+}
+
+#[test]
+fn parse_in_table_expression() {
+    let dialects = all_dialects_where(|d| d.supports_in_table_expression());
+    for sql in [
+        "SELECT a IN t FROM t",
+        "SELECT a NOT IN t FROM t",
+        "SELECT a IN main.t FROM t",
+        "SELECT a IN f() FROM t",
+        "SELECT a NOT IN f(1, 2) FROM t",
+    ] {
+        dialects.verified_stmt(sql);
+    }
+    match dialects.verified_expr("a IN main.f(1)") {
+        Expr::In {
+            target:
+                InTarget::Table {
+                    name,
+                    args: Some(args),
+                },
+            negated: false,
+            global: false,
+            ..
+        } => {
+            assert_eq!(name.to_string(), "main.f");
+            assert_eq!(args.len(), 1);
+        }
+        other => panic!("expected an IN table target, got {other:?}"),
+    }
+    dialects.verified_stmt("SELECT a IN (1, 2) FROM t");
+    dialects.verified_stmt("SELECT a IN (SELECT b FROM u) FROM t");
+}
+
+/// Malformed table and table-function targets of `IN` keep their precise
+/// parse errors.
+#[test]
+fn parse_in_table_expression_malformed_targets() {
+    let dialects = all_dialects_where(|d| d.supports_in_table_expression());
+    for (sql, expected) in [
+        // A dangling dot leaves the qualified name without its last part.
+        ("SELECT a IN t.", "Expected: identifier, found: EOF"),
+        // A trailing comma leaves the next argument without an expression.
+        ("SELECT a IN f(x,)", "Expected: an expression, found: )"),
+        // The argument list never closes its parenthesis.
+        ("SELECT a IN f(1, 2", "Expected: ), found: EOF"),
+    ] {
+        assert_eq!(
+            ParserError::ParserError(expected.to_string()),
+            dialects.parse_sql_statements(sql).unwrap_err(),
+            "{sql}"
+        );
+    }
+}
+
+/// Display of an `IN` table target propagates formatter errors from the
+/// name and the argument list writes.
+#[test]
+fn display_in_table_target_propagates_formatter_errors() {
+    use core::fmt::{self, Write};
+
+    struct RejectingWriter(char);
+
+    impl Write for RejectingWriter {
+        fn write_str(&mut self, value: &str) -> fmt::Result {
+            if value.contains(self.0) {
+                Err(fmt::Error)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    let plain = InTarget::Table {
+        name: ObjectName::from(Ident::new("t")),
+        args: None,
+    };
+    let mut writer = RejectingWriter('t');
+    assert_eq!(write!(writer, "{plain}"), Err(fmt::Error));
+
+    let function = InTarget::Table {
+        name: ObjectName::from(Ident::new("t")),
+        args: Some(vec![FunctionArg::Unnamed(FunctionArgExpr::Expr(
+            Expr::value(number("1")),
+        ))]),
+    };
+    let mut writer = RejectingWriter('1');
+    assert_eq!(write!(writer, "{function}"), Err(fmt::Error));
+}
+
+#[test]
+#[cfg(feature = "visitor")]
+fn test_visit_relations_in_table_target() {
+    let dialects = all_dialects_where(|d| d.supports_in_table_expression());
+    for dialect in dialects.dialects {
+        let stmts = Parser::parse_sql(dialect.as_ref(), "SELECT a IN lookup FROM source").unwrap();
+        let mut relations = vec![];
+        let _ = sqlparser::ast::visit_relations(&stmts, |relation| {
+            relations.push(relation.to_string());
+            core::ops::ControlFlow::<()>::Continue(())
+        });
+        assert_eq!(relations, ["lookup", "source"], "{dialect:?}");
+    }
+}
+
+#[test]
+#[cfg(feature = "visitor")]
+fn test_visit_relations_mut_in_table_target() {
+    let dialects = all_dialects_where(|d| d.supports_in_table_expression());
+    for dialect in dialects.dialects {
+        let mut stmts =
+            Parser::parse_sql(dialect.as_ref(), "SELECT a IN lookup FROM source").unwrap();
+        let _ = sqlparser::ast::visit_relations_mut(&mut stmts, |relation| {
+            if relation.to_string() == "lookup" {
+                *relation = ObjectName::from(Ident::new("renamed"));
+            }
+            core::ops::ControlFlow::<()>::Continue(())
+        });
+        assert_eq!(
+            stmts[0].to_string(),
+            "SELECT a IN renamed FROM source",
+            "{dialect:?}"
+        );
+    }
 }
 
 #[test]
@@ -2777,6 +3003,66 @@ fn parse_between_with_expr() {
         },
         select.selection.unwrap(),
     )
+}
+
+#[test]
+fn parse_comparison_in_between_low_bound() {
+    let dialects = all_dialects_where(|d| d.supports_comparison_in_between_low_bound());
+    for (sql, expected) in [
+        ("a BETWEEN b > 1 AND c", BinaryOperator::Gt),
+        ("a BETWEEN b <> 1 AND c", BinaryOperator::NotEq),
+        ("a BETWEEN b + 1 >= 2 AND c", BinaryOperator::GtEq),
+    ] {
+        match dialects.verified_expr(sql) {
+            Expr::Between { low, .. } => assert!(
+                matches!(&*low, Expr::BinaryOp { op, .. } if *op == expected),
+                "{sql}: {low:?}"
+            ),
+            other => panic!("{sql}: expected BETWEEN, got {other:?}"),
+        }
+    }
+    for (sql, error) in [
+        (
+            "SELECT a BETWEEN b = 1 = true AND c",
+            "Expected: AND, found: =",
+        ),
+        (
+            "SELECT a BETWEEN b LIKE 'x' AND c",
+            "Expected: AND, found: LIKE",
+        ),
+        (
+            "SELECT a BETWEEN b IS NULL AND c",
+            "Expected: AND, found: IS",
+        ),
+        (
+            "SELECT a BETWEEN b BETWEEN 1 AND 2 AND c",
+            "Expected: AND, found: BETWEEN",
+        ),
+        (
+            "SELECT a BETWEEN (1 AND 2 FROM t",
+            "Expected: ), found: FROM",
+        ),
+        (
+            "SELECT a BETWEEN b = (1, 2 FROM t",
+            "Expected: ), found: FROM",
+        ),
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql),
+            Err(ParserError::ParserError(error.to_string())),
+            "{sql}"
+        );
+    }
+
+    assert_eq!(
+        all_dialects_except(|d| {
+            d.supports_comparison_in_between_low_bound() || d.is::<SQLiteDialect>()
+        })
+        .parse_sql_statements("SELECT a BETWEEN b > 1 AND c"),
+        Err(ParserError::ParserError(
+            "Expected: AND, found: >".to_string()
+        ))
+    );
 }
 
 #[test]
@@ -3790,7 +4076,8 @@ fn parse_listagg() {
     verified_stmt("SELECT LISTAGG(dateid)");
     verified_stmt("SELECT LISTAGG(DISTINCT dateid)");
     verified_stmt("SELECT LISTAGG(dateid ON OVERFLOW ERROR)");
-    verified_stmt("SELECT LISTAGG(dateid ON OVERFLOW TRUNCATE N'...' WITH COUNT)");
+    all_dialects_where(|d| d.supports_national_string_literal())
+        .verified_stmt("SELECT LISTAGG(dateid ON OVERFLOW TRUNCATE N'...' WITH COUNT)");
     verified_stmt("SELECT LISTAGG(dateid ON OVERFLOW TRUNCATE X'deadbeef' WITH COUNT)");
 }
 
@@ -3834,6 +4121,28 @@ fn parse_agg_with_order_by() {
     ] {
         supported_dialects.verified_stmt(sql);
     }
+}
+
+#[test]
+fn parse_aggregate_order_by_with_empty_args() {
+    let dialects = all_dialects_where(|d| d.supports_aggregate_order_by_with_empty_args());
+    dialects.verified_stmt("SELECT count(ORDER BY a) FROM t");
+    dialects.verified_stmt("SELECT count(ORDER BY a ASC, b DESC) FROM t");
+    dialects.verified_stmt("SELECT count(ALL ORDER BY a) FROM t");
+    assert_eq!(
+        dialects.parse_sql_statements("SELECT count(DISTINCT ORDER BY a) FROM t"),
+        Err(ParserError::ParserError(
+            "Expected: ), found: BY".to_string()
+        ))
+    );
+
+    assert_eq!(
+        all_dialects_where(|d| !d.supports_aggregate_order_by_with_empty_args())
+            .parse_sql_statements("SELECT count(ORDER BY a) FROM t"),
+        Err(ParserError::ParserError(
+            "Expected: ), found: BY".to_string()
+        ))
+    );
 }
 
 #[test]
@@ -4699,7 +5008,6 @@ fn parse_assert() {
 }
 
 #[test]
-#[allow(clippy::collapsible_match)]
 fn parse_assert_message() {
     let sql = "ASSERT (SELECT COUNT(*) FROM my_table) > 0 AS 'No rows in my_table'";
     let ast = one_statement_parses_to(
@@ -4709,16 +5017,12 @@ fn parse_assert_message() {
     match ast {
         Statement::Assert {
             condition: _condition,
-            message: Some(message),
-        } => {
-            match message {
-                Expr::Value(ValueWithSpan {
+            message:
+                Some(Expr::Value(ValueWithSpan {
                     value: Value::SingleQuotedString(s),
                     span: _,
-                }) => assert_eq!(s, "No rows in my_table"),
-                _ => unreachable!(),
-            };
-        }
+                })),
+        } => assert_eq!(s, "No rows in my_table"),
         _ => unreachable!(),
     }
 }
@@ -4835,7 +5139,7 @@ fn parse_create_table_as_table() {
     let expected_query1 = Box::new(Query {
         with: None,
         body: Box::new(SetExpr::Table(Box::new(Table {
-            table_name: Some("old_table".to_string()),
+            table_name: Some(Ident::new("old_table")),
             schema_name: None,
         }))),
         order_by: None,
@@ -4861,8 +5165,8 @@ fn parse_create_table_as_table() {
     let expected_query2 = Box::new(Query {
         with: None,
         body: Box::new(SetExpr::Table(Box::new(Table {
-            table_name: Some("old_table".to_string()),
-            schema_name: Some("schema_name".to_string()),
+            table_name: Some(Ident::new("old_table")),
+            schema_name: Some(Ident::new("schema_name")),
         }))),
         order_by: None,
         limit_clause: None,
@@ -5436,12 +5740,7 @@ fn parse_alter_table_add_column() {
 
 #[test]
 fn parse_alter_table_add_column_if_not_exists() {
-    let dialects = TestedDialects::new(vec![
-        Box::new(PostgreSqlDialect {}),
-        Box::new(BigQueryDialect {}),
-        Box::new(GenericDialect {}),
-        Box::new(DuckDbDialect {}),
-    ]);
+    let dialects = all_dialects_where(|d| d.supports_add_column_if_not_exists());
 
     match alter_table_op(dialects.verified_stmt("ALTER TABLE tab ADD IF NOT EXISTS foo TEXT")) {
         AlterTableOperation::AddColumn { if_not_exists, .. } => {
@@ -5658,6 +5957,154 @@ fn parse_bad_constraint() {
         ),
         res.unwrap_err()
     );
+}
+
+#[test]
+fn parse_sequence_options_in_any_order() {
+    // The sequence options form an unordered list, so every permutation below
+    // is accepted and round-trips in the order written.
+    let dialects = all_dialects();
+    for sql in [
+        "CREATE SEQUENCE sa START WITH 1 INCREMENT BY 1",
+        "CREATE SEQUENCE sb INCREMENT BY 1 START WITH 1",
+        "CREATE SEQUENCE sc CACHE 1 START WITH 1",
+        "CREATE SEQUENCE sd CYCLE INCREMENT BY 2",
+        "CREATE SEQUENCE se NO MAXVALUE NO MINVALUE NO CYCLE INCREMENT 1",
+        "CREATE SEQUENCE sf AS INTEGER START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1",
+        "CREATE SEQUENCE sg START WITH 1 AS BIGINT",
+        "CREATE SEQUENCE sh OWNED BY t.c START WITH 5",
+        "CREATE SEQUENCE si OWNED BY NONE INCREMENT BY 2",
+        "CREATE SEQUENCE sj CACHE 1 AS BIGINT OWNED BY a.b START WITH 3",
+        "CREATE SEQUENCE sk OWNED BY none.c",
+        "CREATE TABLE t (id INT GENERATED ALWAYS AS IDENTITY ( START WITH 10 INCREMENT BY 1 CYCLE ))",
+        "ALTER TABLE t ALTER COLUMN id ADD GENERATED AS IDENTITY ( CACHE 2 INCREMENT 1 )",
+    ] {
+        dialects.verified_stmt(sql);
+    }
+
+    // This is what `pg_dump -s` emits for a table with a SERIAL column.
+    dialects.one_statement_parses_to(
+        r#"CREATE SEQUENCE public.accounts_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1"#,
+        "CREATE SEQUENCE public.accounts_id_seq AS INTEGER START WITH 1 INCREMENT BY 1 NO MINVALUE NO MAXVALUE CACHE 1",
+    );
+
+    // The parsed options keep the order they were written in, and `OWNED BY NONE`
+    // is distinct from being owned by something called `NONE`.
+    let Statement::CreateSequence {
+        sequence_options, ..
+    } = dialects.verified_stmt("CREATE SEQUENCE sk CACHE 1 OWNED BY NONE AS BIGINT INCREMENT BY 3")
+    else {
+        panic!("expected a CREATE SEQUENCE statement");
+    };
+    assert!(matches!(
+        sequence_options.as_slice(),
+        [
+            SequenceOptions::Cache(_),
+            SequenceOptions::OwnedBy(None),
+            SequenceOptions::DataType(DataType::BigInt(None)),
+            SequenceOptions::IncrementBy(_, true),
+        ]
+    ));
+
+    for (sql, expected) in [
+        // Each option may appear only once.
+        (
+            "CREATE SEQUENCE s START WITH 1 START 2",
+            "START specified more than once",
+        ),
+        (
+            "CREATE SEQUENCE s INCREMENT 1 INCREMENT BY 2",
+            "INCREMENT specified more than once",
+        ),
+        (
+            "CREATE SEQUENCE s MINVALUE 1 NO MINVALUE",
+            "MINVALUE | NO MINVALUE specified more than once",
+        ),
+        (
+            "CREATE SEQUENCE s MAXVALUE 1 NO MAXVALUE",
+            "MAXVALUE | NO MAXVALUE specified more than once",
+        ),
+        (
+            "CREATE SEQUENCE s CACHE 1 CACHE 2",
+            "CACHE specified more than once",
+        ),
+        (
+            "CREATE SEQUENCE s CYCLE NO CYCLE",
+            "CYCLE | NO CYCLE specified more than once",
+        ),
+        (
+            "CREATE SEQUENCE s AS INT AS BIGINT",
+            "AS specified more than once",
+        ),
+        (
+            "CREATE SEQUENCE s OWNED BY a.b OWNED BY NONE",
+            "OWNED BY specified more than once",
+        ),
+        (
+            "CREATE TABLE t (id INT GENERATED ALWAYS AS IDENTITY (START 1 START 2))",
+            "START specified more than once",
+        ),
+        (
+            "CREATE SEQUENCE s AS",
+            "Expected: a data type name, found: EOF",
+        ),
+        (
+            "CREATE SEQUENCE s OWNED BY",
+            "Expected: identifier, found: EOF",
+        ),
+        // Identity columns take the shared list without `AS` and `OWNED BY`.
+        (
+            "CREATE TABLE t (id INT GENERATED ALWAYS AS IDENTITY (AS BIGINT))",
+            "Expected: ), found: AS",
+        ),
+        (
+            "CREATE TABLE t (id INT GENERATED ALWAYS AS IDENTITY (OWNED BY t.id))",
+            "Expected: ), found: OWNED",
+        ),
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql).unwrap_err(),
+            ParserError::ParserError(expected.to_string()),
+        );
+    }
+}
+
+#[test]
+fn sequence_options_reject_non_numeric_values() {
+    let dialects = all_dialects();
+    for (sql, expected) in [
+        (
+            "CREATE SEQUENCE s MINVALUE x",
+            "Expected: a concrete value, found: x",
+        ),
+        (
+            "CREATE SEQUENCE s MAXVALUE x",
+            "Expected: a concrete value, found: x",
+        ),
+        (
+            "CREATE SEQUENCE s START WITH x",
+            "Expected: a concrete value, found: x",
+        ),
+        (
+            "CREATE SEQUENCE s CACHE x",
+            "Expected: a concrete value, found: x",
+        ),
+        (
+            "CREATE TABLE t (id INT GENERATED BY DEFAULT AS IDENTITY (MINVALUE x))",
+            "Expected: a concrete value, found: x",
+        ),
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql).unwrap_err(),
+            ParserError::ParserError(expected.to_string()),
+        );
+    }
 }
 
 #[test]
@@ -6440,8 +6887,9 @@ fn parse_literal_decimal() {
 
 #[test]
 fn parse_literal_string() {
+    let national_string_dialects = all_dialects_where(|d| d.supports_national_string_literal());
     let sql = "SELECT 'one', N'national string', X'deadBEEF'";
-    let select = verified_only_select(sql);
+    let select = national_string_dialects.verified_only_select(sql);
     assert_eq!(3, select.projection.len());
     assert_eq!(
         &Expr::Value((Value::SingleQuotedString("one".to_string())).with_empty_span()),
@@ -6458,9 +6906,10 @@ fn parse_literal_string() {
         expr_from_projection(&select.projection[2])
     );
 
-    one_statement_parses_to("SELECT x'deadBEEF'", "SELECT X'deadBEEF'");
-    one_statement_parses_to("SELECT n'national string'", "SELECT N'national string'");
-    one_statement_parses_to(
+    all_dialects().one_statement_parses_to("SELECT x'deadBEEF'", "SELECT X'deadBEEF'");
+    national_string_dialects
+        .one_statement_parses_to("SELECT n'national string'", "SELECT N'national string'");
+    national_string_dialects.one_statement_parses_to(
         r#"SELECT n'Tu geres '';'' et ''"'' ?'"#,
         r#"SELECT N'Tu geres '';'' et ''"'' ?'"#,
     );
@@ -6932,11 +7381,43 @@ fn parse_text_type_modifier_double_colon_cast() {
             expr: Box::new(Expr::Identifier(Ident::new("ID"))),
             data_type: DataType::Custom(
                 ObjectName::from(vec![Ident::new("TEXT")]),
-                vec!["16777216".to_string()]
+                vec![TypeModifier::Number("16777216".to_string(), false)]
             ),
             format: None,
         }
     );
+}
+
+#[test]
+fn parse_custom_type_modifier_spellings() {
+    for sql in [
+        r#"CREATE TABLE t (c foo('a b'))"#,
+        r#"CREATE TABLE t (c foo(')'))"#,
+        r#"CREATE TABLE t (c foo('it''s'))"#,
+        "CREATE TABLE t (c foo(bar, 9))",
+    ] {
+        all_dialects().verified_stmt(sql);
+    }
+    let generic = TestedDialects::new(vec![Box::new(GenericDialect {})]);
+    generic.verified_stmt(r#"CREATE TABLE t (c foo("quoted"))"#);
+    generic.verified_stmt("CREATE TABLE t (c foo(9L))");
+
+    let statements = generic
+        .parse_sql_statements("CREATE TABLE t (c foo(bar, 9, 'z', 42L))")
+        .unwrap();
+    let Statement::CreateTable(create_table) = &statements[0] else {
+        panic!("expected CREATE TABLE")
+    };
+    let DataType::Custom(_, modifiers) = &create_table.columns[0].data_type else {
+        panic!("expected a custom type")
+    };
+    let expected = vec![
+        TypeModifier::Identifier(Ident::new("bar")),
+        TypeModifier::Number("9".to_string(), false),
+        TypeModifier::String("z".to_string()),
+        TypeModifier::Number("42".to_string(), true),
+    ];
+    assert_eq!(modifiers, &expected);
 }
 
 #[test]
@@ -7743,7 +8224,7 @@ fn parse_joins_on() {
                 with_ordinality: false,
                 json_path: None,
                 sample: None,
-                index_hints: vec![],
+                index_directives: vec![],
             },
             global,
             join_operator: f(JoinConstraint::On(Expr::BinaryOp {
@@ -7885,7 +8366,7 @@ fn parse_joins_using() {
                 with_ordinality: false,
                 json_path: None,
                 sample: None,
-                index_hints: vec![],
+                index_directives: vec![],
             },
             global: false,
             join_operator: f(JoinConstraint::Using(vec![ObjectName::from(vec![
@@ -7980,7 +8461,7 @@ fn parse_natural_join() {
                 with_ordinality: false,
                 json_path: None,
                 sample: None,
-                index_hints: vec![],
+                index_directives: vec![],
             },
             global: false,
             join_operator: f(JoinConstraint::Natural),
@@ -8366,12 +8847,25 @@ fn parse_multiple_statements() {
     // ensure that SELECT/WITH is not parsed as a table or column alias if ';'
     // separating the statements is omitted:
     test_with("SELECT foo FROM baz", "SELECT", " bar");
-    test_with("SELECT foo", "WITH", " cte AS (SELECT 1 AS s) SELECT bar");
-    test_with(
-        "SELECT foo FROM baz",
-        "WITH",
-        " cte AS (SELECT 1 AS s) SELECT bar",
-    );
+    // WITH is a valid alias in SQLite so missing-semicolon detection skips it
+    for sql1 in ["SELECT foo", "SELECT foo FROM baz"] {
+        let cte_rest = " cte AS (SELECT 1 AS s) SELECT bar";
+        let res = parse_sql_statements(&(sql1.to_owned() + ";WITH" + cte_rest));
+        assert_eq!(
+            vec![
+                one_statement_parses_to(sql1, ""),
+                one_statement_parses_to(&("WITH".to_owned() + cte_rest), ""),
+            ],
+            res.unwrap()
+        );
+        one_statement_parses_to(&(sql1.to_owned() + ";"), sql1);
+        let res = all_dialects_except(|d| d.is::<SQLiteDialect>())
+            .parse_sql_statements(&(sql1.to_owned() + " WITH" + cte_rest));
+        assert_eq!(
+            ParserError::ParserError("Expected: end of statement, found: WITH".to_string()),
+            res.unwrap_err()
+        );
+    }
     test_with("DELETE FROM foo", "SELECT", " bar");
     test_with("INSERT INTO foo VALUES (1)", "SELECT", " bar");
     // Since MySQL supports the `CREATE TABLE SELECT` syntax, this needs to be handled separately
@@ -8478,7 +8972,9 @@ fn parse_trim() {
 
     assert_eq!(
         ParserError::ParserError("Expected: ), found: 'xyz'".to_owned()),
-        parse_sql_statements("SELECT TRIM(FOO 'xyz' FROM 'xyzfooxyz')").unwrap_err()
+        all_dialects_where(|d| !d.is_custom_type_typed_string(Keyword::NoKeyword, false))
+            .parse_sql_statements("SELECT TRIM(FOO 'xyz' FROM 'xyzfooxyz')")
+            .unwrap_err()
     );
 
     // dialects that support comma-separated TRIM syntax
@@ -8516,12 +9012,23 @@ fn parse_trim() {
         expr_from_projection(only(&select.projection))
     );
 
+    dialects.one_statement_parses_to(
+        "SELECT TRIM(BOTH FROM 'yxTomxx', 'xyz')",
+        "SELECT TRIM(BOTH 'yxTomxx', 'xyz')",
+    );
+
     // dialects without comma-style TRIM syntax should fail
     let unsupported_dialects = all_dialects_where(|d| !d.supports_comma_separated_trim());
     assert_eq!(
         ParserError::ParserError("Expected: ), found: ,".to_owned()),
         unsupported_dialects
             .parse_sql_statements("SELECT TRIM('xyz', 'a')")
+            .unwrap_err()
+    );
+    assert_eq!(
+        ParserError::ParserError("Expected: ), found: 'xyz'".to_owned()),
+        unsupported_dialects
+            .parse_sql_statements("SELECT TRIM(FROM 'xyz')")
             .unwrap_err()
     );
 }
@@ -9204,7 +9711,8 @@ fn parse_fetch() {
     });
     let ast = verified_query("SELECT foo FROM bar FETCH FIRST 2 ROWS ONLY");
     assert_eq!(ast.fetch, fetch_first_two_rows_only);
-    let ast = verified_query("SELECT 'foo' FETCH FIRST 2 ROWS ONLY");
+    let ast = all_dialects_except(|d| d.is::<SQLiteDialect>())
+        .verified_query("SELECT 'foo' FETCH FIRST 2 ROWS ONLY");
     assert_eq!(ast.fetch, fetch_first_two_rows_only);
     let ast = verified_query("SELECT foo FROM bar FETCH FIRST ROWS ONLY");
     assert_eq!(
@@ -10011,6 +10519,57 @@ fn test_create_index_with_with_clause() {
 }
 
 #[test]
+fn parse_create_index_operator_class_before_sort_options() {
+    let dialects = all_dialects();
+    dialects.verified_stmt("CREATE INDEX ii ON t(c)");
+    dialects.verified_stmt("CREATE INDEX ii ON t(c ops)");
+    dialects.verified_stmt("CREATE INDEX ii ON t(c DESC)");
+    dialects.verified_stmt("CREATE INDEX ii ON t(c ops DESC)");
+    dialects.verified_stmt("CREATE INDEX ii ON t(c ops DESC NULLS FIRST)");
+
+    let statements = dialects
+        .parse_sql_statements("CREATE INDEX ii ON t(c ops DESC)")
+        .unwrap();
+    let Statement::CreateIndex(create_index) = &statements[0] else {
+        panic!("expected CREATE INDEX")
+    };
+    let column = &create_index.columns[0];
+    assert_eq!(column.column.expr, Expr::Identifier(Ident::new("c")));
+    assert_eq!(
+        column.operator_class,
+        Some(ObjectName::from(vec![Ident::new("ops")]))
+    );
+    assert_eq!(column.column.options.sort, Some(OrderBySort::Desc));
+}
+
+#[test]
+fn display_index_column_propagates_expression_errors() {
+    use core::fmt::{self, Write};
+
+    struct RejectingWriter(char);
+
+    impl Write for RejectingWriter {
+        fn write_str(&mut self, value: &str) -> fmt::Result {
+            if value.contains(self.0) {
+                Err(fmt::Error)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    let statements = all_dialects()
+        .parse_sql_statements("CREATE INDEX ii ON t(c ops DESC)")
+        .unwrap();
+    let Statement::CreateIndex(create_index) = &statements[0] else {
+        panic!("expected CREATE INDEX")
+    };
+    let column = &create_index.columns[0];
+    let mut writer = RejectingWriter('c');
+    assert_eq!(write!(writer, "{column}"), Err(fmt::Error));
+}
+
+#[test]
 fn parse_create_index_async() {
     verified_stmt("CREATE INDEX ASYNC my_index ON my_table(col1)");
     verified_stmt("CREATE UNIQUE INDEX ASYNC my_index ON my_table(col1)");
@@ -10418,7 +10977,7 @@ fn parse_merge() {
                     with_ordinality: false,
                     json_path: None,
                     sample: None,
-                    index_hints: vec![],
+                    index_directives: vec![],
                 }
             );
             assert_eq!(table, table_no_into);
@@ -11255,15 +11814,18 @@ fn parse_is_boolean() {
     verified_stmt("SELECT f FROM foo WHERE field IS UNKNOWN");
     verified_stmt("SELECT f FROM foo WHERE field IS NOT UNKNOWN");
 
-    for sql in [
-        "SELECT f from foo where field is 0",
-        "SELECT s, s IS XYZ NORMALIZED FROM foo",
-        "SELECT s, s IS NFKC FROM foo",
-        "SELECT s, s IS TRIM(' NFKC ') FROM foo",
+    for (sql, found) in [
+        ("SELECT f from foo where field is 0", "0"),
+        ("SELECT s, s IS XYZ NORMALIZED FROM foo", "XYZ"),
+        ("SELECT s, s IS NFKC FROM foo", "FROM"),
+        ("SELECT s, s IS TRIM(' NFKC ') FROM foo", "TRIM"),
     ] {
-        assert!(
-            parse_sql_statements(sql).is_err(),
-            "expected a parse failure for `{sql}`"
+        assert_eq!(
+            parse_sql_statements(sql),
+            Err(ParserError::ParserError(format!(
+                "Expected: [NOT] NULL | TRUE | FALSE | DISTINCT | [NOT] JSON [VALUE | SCALAR | ARRAY | OBJECT] [WITH | WITHOUT UNIQUE [KEYS]] | [form] NORMALIZED FROM after IS, found: {found}"
+            ))),
+            "{sql}"
         );
     }
 }
@@ -11310,26 +11872,64 @@ fn parse_is_json_predicate() {
 fn parse_is_json_predicate_invalid() {
     let dialects = all_dialects();
 
-    let invalid = [
-        "SELECT * FROM t WHERE a IS JSON WITH FROM",
-        "SELECT * FROM t WHERE a IS JSON WITH KEYS",
-        "SELECT * FROM t WHERE a IS JSON WITHOUT FROM",
-        "SELECT * FROM t WHERE a IS JSON WITHOUT KEYS",
-        "SELECT * FROM t WHERE a IS NOT JSON WITH FROM",
-        "SELECT * FROM t WHERE a IS JSON VALUE ARRAY",
-        "SELECT * FROM t WHERE a IS JSON OBJECT VALUE",
-        "SELECT * FROM t WHERE a IS JSON WITH UNIQUE EXTRA",
-        "SELECT * FROM t WHERE a IS JSON WITH UNIQUE KEYS EXTRA",
-        "SELECT * FROM t WHERE a IS JSON WITHOUT UNIQUE EXTRA",
-        "SELECT * FROM t WHERE a IS JSON WITHOUT UNIQUE KEYS EXTRA",
-        "SELECT * FROM t WHERE a IS JSON WITH UNIQUE KEYS WITH UNIQUE KEYS",
-        "SELECT * FROM t WHERE a IS JSON WITHOUT UNIQUE KEYS WITHOUT UNIQUE KEYS",
-    ];
-
-    for sql in invalid {
-        assert!(
-            dialects.parse_sql_statements(sql).is_err(),
-            "expected a parse failure for `{sql}`"
+    for (sql, err) in [
+        (
+            "SELECT * FROM t WHERE a IS JSON WITH FROM",
+            "Expected: UNIQUE, found: FROM",
+        ),
+        (
+            "SELECT * FROM t WHERE a IS JSON WITH KEYS",
+            "Expected: UNIQUE, found: KEYS",
+        ),
+        (
+            "SELECT * FROM t WHERE a IS JSON WITHOUT FROM",
+            "Expected: UNIQUE, found: FROM",
+        ),
+        (
+            "SELECT * FROM t WHERE a IS JSON WITHOUT KEYS",
+            "Expected: UNIQUE, found: KEYS",
+        ),
+        (
+            "SELECT * FROM t WHERE a IS NOT JSON WITH FROM",
+            "Expected: UNIQUE, found: FROM",
+        ),
+        (
+            "SELECT * FROM t WHERE a IS JSON VALUE ARRAY",
+            "Expected: end of statement, found: ARRAY",
+        ),
+        (
+            "SELECT * FROM t WHERE a IS JSON OBJECT VALUE",
+            "Expected: end of statement, found: VALUE",
+        ),
+        (
+            "SELECT * FROM t WHERE a IS JSON WITH UNIQUE EXTRA",
+            "Expected: end of statement, found: EXTRA",
+        ),
+        (
+            "SELECT * FROM t WHERE a IS JSON WITH UNIQUE KEYS EXTRA",
+            "Expected: end of statement, found: EXTRA",
+        ),
+        (
+            "SELECT * FROM t WHERE a IS JSON WITHOUT UNIQUE EXTRA",
+            "Expected: end of statement, found: EXTRA",
+        ),
+        (
+            "SELECT * FROM t WHERE a IS JSON WITHOUT UNIQUE KEYS EXTRA",
+            "Expected: end of statement, found: EXTRA",
+        ),
+        (
+            "SELECT * FROM t WHERE a IS JSON WITH UNIQUE KEYS WITH UNIQUE KEYS",
+            "Expected: end of statement, found: WITH",
+        ),
+        (
+            "SELECT * FROM t WHERE a IS JSON WITHOUT UNIQUE KEYS WITHOUT UNIQUE KEYS",
+            "Expected: end of statement, found: WITHOUT",
+        ),
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql),
+            Err(ParserError::ParserError(err.to_string())),
+            "{sql}"
         );
     }
 }
@@ -11671,6 +12271,24 @@ fn parse_deeply_nested_interval_hits_recursion_limits() {
 }
 
 #[test]
+fn parse_deeply_nested_data_type_hits_recursion_limits() {
+    let dialect = GenericDialect {};
+
+    let sql = format!(
+        "SELECT CAST(x AS {}INT64{})",
+        "ARRAY<".repeat(1000),
+        ">".repeat(1000)
+    );
+
+    let res = Parser::new(&dialect)
+        .try_with_sql(&sql)
+        .expect("tokenize to work")
+        .parse_statements();
+
+    assert_eq!(res, Err(ParserError::RecursionLimitExceeded));
+}
+
+#[test]
 fn parse_with_recursion_limit() {
     let dialect = GenericDialect {};
 
@@ -11836,7 +12454,7 @@ fn parse_pivot_table() {
                 with_ordinality: false,
                 json_path: None,
                 sample: None,
-                index_hints: vec![],
+                index_directives: vec![],
             }),
             aggregate_functions: vec![
                 expected_function("a", None),
@@ -11916,7 +12534,7 @@ fn parse_pivot_table() {
                 with_ordinality: false,
                 json_path: None,
                 sample: None,
-                index_hints: vec![],
+                index_directives: vec![],
             }),
             aggregate_functions: vec![
                 ExprWithAlias {
@@ -11976,6 +12594,13 @@ fn parse_pivot_table() {
         "SELECT * FROM t PIVOT(SUM(1) x, COUNT(42) y FOR a.abc IN (1))",
         "SELECT * FROM t PIVOT(SUM(1) AS x, COUNT(42) AS y FOR a.abc IN (1))",
     );
+
+    assert_eq!(
+        all_dialects().parse_sql_statements("SELECT * FROM t PIVOT(SUM(a) AS 1 FOR b IN (1))"),
+        Err(ParserError::ParserError(
+            "Expected: an identifier after AS, found: 1".to_string()
+        ))
+    );
 }
 
 #[test]
@@ -11995,7 +12620,7 @@ fn parse_unpivot_table() {
             with_ordinality: false,
             json_path: None,
             sample: None,
-            index_hints: vec![],
+            index_directives: vec![],
         }),
         null_inclusion: None,
         value: Expr::Identifier(Ident::new("quantity")),
@@ -12200,23 +12825,26 @@ fn parse_select_table_with_index_hints() {
     let s = supported_dialects.verified_only_select(
         "SELECT * FROM t1 USE INDEX (i1) IGNORE INDEX FOR ORDER BY (i2) ORDER BY a",
     );
-    if let TableFactor::Table { index_hints, .. } = &s.from[0].relation {
+    if let TableFactor::Table {
+        index_directives, ..
+    } = &s.from[0].relation
+    {
         assert_eq!(
             vec![
-                TableIndexHints {
+                TableIndexDirective::MySql(TableIndexHints {
                     hint_type: TableIndexHintType::Use,
                     index_names: vec!["i1".into()],
                     index_type: TableIndexType::Index,
                     for_clause: None,
-                },
-                TableIndexHints {
+                }),
+                TableIndexDirective::MySql(TableIndexHints {
                     hint_type: TableIndexHintType::Ignore,
                     index_names: vec!["i2".into()],
                     index_type: TableIndexType::Index,
                     for_clause: Some(TableIndexHintForClause::OrderBy),
-                },
+                }),
             ],
-            *index_hints
+            *index_directives
         );
     } else {
         panic!("Expected TableFactor::Table");
@@ -12251,7 +12879,7 @@ fn parse_select_table_with_index_hints() {
                 with_ordinality: false,
                 json_path: None,
                 sample: None,
-                index_hints: vec![],
+                index_directives: vec![],
             },
             joins: vec![],
         }]
@@ -12280,7 +12908,7 @@ fn parse_pivot_unpivot_table() {
                     with_ordinality: false,
                     json_path: None,
                     sample: None,
-                    index_hints: vec![],
+                    index_directives: vec![],
                 }),
                 null_inclusion: None,
                 value: Expr::Identifier(Ident::new("population")),
@@ -12358,9 +12986,12 @@ fn parse_non_latin_identifiers() {
         Box::new(DuckDbDialect {}),
         Box::new(MsSqlDialect {}),
     ]);
-    assert!(supported_dialects
-        .parse_sql_statements("SELECT 💝 FROM table1")
-        .is_err());
+    assert_eq!(
+        ParserError::ParserError("Expected: an expression, found: 💝".to_string()),
+        supported_dialects
+            .parse_sql_statements("SELECT 💝 FROM table1")
+            .unwrap_err()
+    );
 }
 
 #[test]
@@ -13154,22 +13785,71 @@ fn test_release_savepoint() {
 
 #[test]
 fn test_comment_hash_syntax() {
-    let dialects = TestedDialects::new(vec![
-        Box::new(BigQueryDialect {}),
-        Box::new(SnowflakeDialect {}),
-        Box::new(MySqlDialect {}),
-        Box::new(HiveDialect {}),
-    ]);
     let sql = r#"
     # comment
     SELECT a, b, c # , d, e
     FROM T
     ####### comment #################
-    WHERE true
+    WHERE true # it's a comment
     # comment
     "#;
     let canonical = "SELECT a, b, c FROM T WHERE true";
+    all_dialects_where(|d| d.supports_hash_comment() && !d.requires_hash_comment_space())
+        .verified_only_select_with_canonical(sql, canonical);
+
+    // Elsewhere `#` is an operator, so the apostrophe starts an unterminated string.
+    assert_eq!(
+        all_dialects_where(|d| !d.supports_hash_comment())
+            .parse_sql_statements("SELECT 1 # it's a comment")
+            .unwrap_err(),
+        ParserError::TokenizerError(
+            "Unterminated string literal at Line: 1, Column: 14".to_string()
+        )
+    );
+}
+
+#[test]
+fn test_comment_hash_requires_space() {
+    let dialects = all_dialects_where(|d| d.requires_hash_comment_space());
+
+    let sql = r#"
+    # comment
+    #! shebang comment
+    SELECT a, b, c # , d, e
+    FROM T
+    WHERE true #! it's a comment
+    "#;
+    let canonical = "SELECT a, b, c FROM T WHERE true";
     dialects.verified_only_select_with_canonical(sql, canonical);
+
+    // Without a space or `!` after it, `#` is an operator token, which the parser rejects.
+    for sql in [
+        "SELECT 1 #comment",
+        "SELECT 1 ####### comment",
+        "SELECT 1 #",
+        "SELECT 1 #\tcomment",
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql).unwrap_err(),
+            ParserError::ParserError("No infix parser for token Sharp".to_string()),
+            "{sql}"
+        );
+    }
+    dialects.tokenizes_to(
+        "SELECT 1 ### comment",
+        vec![
+            Token::make_keyword("SELECT"),
+            Token::Whitespace(Whitespace::Space),
+            Token::Number("1".to_string(), false),
+            Token::Whitespace(Whitespace::Space),
+            Token::Sharp,
+            Token::Sharp,
+            Token::Whitespace(Whitespace::SingleLineComment {
+                prefix: "#".to_string(),
+                comment: " comment".to_string(),
+            }),
+        ],
+    );
 }
 
 #[test]
@@ -13924,17 +14604,50 @@ fn test_match_recognize_patterns() {
         ]),
     );
 
-    // double repetition
+    // reluctant repetition
     check(
         "S2*?",
         Repetition(
-            Box::new(Repetition(
-                Box::new(Symbol(Named(Ident::new("S2")))),
-                ZeroOrMore,
-            )),
-            AtMostOne,
+            Box::new(Symbol(Named(Ident::new("S2")))),
+            Reluctant(Box::new(ZeroOrMore)),
         ),
     );
+
+    check(
+        "S1+? S2?? S3{2,4}?",
+        Concat(vec![
+            Repetition(
+                Box::new(Symbol(Named(Ident::new("S1")))),
+                Reluctant(Box::new(OneOrMore)),
+            ),
+            Repetition(
+                Box::new(Symbol(Named(Ident::new("S2")))),
+                Reluctant(Box::new(AtMostOne)),
+            ),
+            Repetition(
+                Box::new(Symbol(Named(Ident::new("S3")))),
+                Reluctant(Box::new(Range(2, 4))),
+            ),
+        ]),
+    );
+
+    for (pattern, found) in [
+        ("S1**", "*"),
+        ("S1+++", "+"),
+        ("S1???", "?"),
+        ("S1{2,4}+", "+"),
+    ] {
+        let sql = format!(
+            "SELECT * FROM my_table MATCH_RECOGNIZE(PATTERN ({pattern}) DEFINE DUMMY AS 1 = 1)"
+        );
+        assert_eq!(
+            all_dialects_where(|d| d.supports_match_recognize()).parse_sql_statements(&sql),
+            Err(ParserError::ParserError(format!(
+                "Expected: identifier, found: {found}"
+            ))),
+            "{pattern}"
+        );
+    }
 
     // range quantifiers in an alternation
     check(
@@ -13976,11 +14689,8 @@ fn test_match_recognize_patterns() {
                 Symbol(Start),
                 Symbol(Named(Ident::new("S1"))),
                 Repetition(
-                    Box::new(Repetition(
-                        Box::new(Symbol(Named(Ident::new("S2")))),
-                        ZeroOrMore,
-                    )),
-                    AtMostOne,
+                    Box::new(Symbol(Named(Ident::new("S2")))),
+                    Reluctant(Box::new(ZeroOrMore)),
                 ),
                 Repetition(
                     Box::new(Group(Box::new(Concat(vec![
@@ -15005,6 +15715,168 @@ fn test_alter_policy() {
 }
 
 #[test]
+fn test_alter_trigger() {
+    match verified_stmt("ALTER TRIGGER old_trigger ON my_table RENAME TO new_trigger") {
+        Statement::AlterTrigger(AlterTrigger {
+            name,
+            table_name,
+            operation,
+        }) => {
+            assert_eq!(name.to_string(), "old_trigger");
+            assert_eq!(table_name.to_string(), "my_table");
+            assert_eq!(
+                operation,
+                AlterTriggerOperation::Rename {
+                    new_name: Ident::new("new_trigger")
+                }
+            );
+        }
+        _ => unreachable!(),
+    }
+
+    match verified_stmt("ALTER TRIGGER my_trigger ON my_table DEPENDS ON EXTENSION my_extension") {
+        Statement::AlterTrigger(AlterTrigger { operation, .. }) => {
+            assert_eq!(
+                operation,
+                AlterTriggerOperation::DependsOnExtension {
+                    no: false,
+                    extension_name: ObjectName::from(Ident::new("my_extension"))
+                }
+            );
+        }
+        _ => unreachable!(),
+    }
+
+    match verified_stmt("ALTER TRIGGER my_trigger ON my_table NO DEPENDS ON EXTENSION my_extension")
+    {
+        Statement::AlterTrigger(AlterTrigger { operation, .. }) => {
+            assert_eq!(
+                operation,
+                AlterTriggerOperation::DependsOnExtension {
+                    no: true,
+                    extension_name: ObjectName::from(Ident::new("my_extension"))
+                }
+            );
+        }
+        _ => unreachable!(),
+    }
+
+    // a qualified table name is preserved
+    verified_stmt("ALTER TRIGGER my_trigger ON my_schema.my_table RENAME TO new_trigger");
+
+    // an operation is required
+    assert_eq!(
+        parse_sql_statements("ALTER TRIGGER my_trigger ON my_table")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: RENAME, DEPENDS or NO DEPENDS after ALTER TRIGGER, found: EOF"
+    );
+    // missing TO in RENAME TO
+    assert_eq!(
+        parse_sql_statements("ALTER TRIGGER my_trigger ON my_table RENAME")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: TO, found: EOF"
+    );
+    // missing new name in RENAME TO
+    assert_eq!(
+        parse_sql_statements("ALTER TRIGGER my_trigger ON my_table RENAME TO")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: identifier, found: EOF"
+    );
+    // NO must be followed by DEPENDS
+    assert_eq!(
+        parse_sql_statements("ALTER TRIGGER my_trigger ON my_table NO EXTENSION my_extension")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: DEPENDS after NO, found: EXTENSION"
+    );
+    // missing the extension name
+    assert_eq!(
+        parse_sql_statements("ALTER TRIGGER my_trigger ON my_table DEPENDS ON EXTENSION")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: identifier, found: EOF"
+    );
+}
+
+#[test]
+fn parse_alter_trigger_rejects_malformed_statements() {
+    for (sql, expected) in [
+        ("ALTER TRIGGER", "Expected: identifier, found: EOF"),
+        ("ALTER TRIGGER t", "Expected: ON, found: EOF"),
+        ("ALTER TRIGGER t ON", "Expected: identifier, found: EOF"),
+        ("ALTER TRIGGER t ON tbl DEPENDS", "Expected: ON, found: EOF"),
+    ] {
+        assert_eq!(
+            parse_sql_statements(sql).unwrap_err().to_string(),
+            format!("sql parser error: {expected}"),
+        );
+    }
+}
+
+#[test]
+fn display_alter_trigger_propagates_write_errors() {
+    use core::fmt::{self, Write};
+
+    struct RejectingWriter<'a>(&'a str);
+
+    impl Write for RejectingWriter<'_> {
+        fn write_str(&mut self, value: &str) -> fmt::Result {
+            if value.contains(self.0) {
+                Err(fmt::Error)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    let statement = verified_stmt("ALTER TRIGGER t ON tbl NO DEPENDS ON EXTENSION ext");
+    let mut writer = RejectingWriter("NO ");
+    assert_eq!(write!(writer, "{statement}"), Err(fmt::Error));
+}
+
+#[test]
+fn parse_alter_trigger_spans() {
+    let dialects = all_dialects();
+    for (sql, end) in [
+        (
+            "ALTER TRIGGER trg ON t RENAME TO trg2",
+            Location::new(1, 38),
+        ),
+        (
+            "ALTER TRIGGER trg ON t DEPENDS ON EXTENSION ext",
+            Location::new(1, 48),
+        ),
+    ] {
+        for dialect in &dialects.dialects {
+            let statements = Parser::parse_sql(dialect.as_ref(), sql).unwrap();
+            assert_eq!(
+                statements[0].span(),
+                Span::new(Location::new(1, 15), end),
+                "{dialect:?} {sql}"
+            );
+        }
+    }
+}
+
+#[test]
+fn parse_alter_rejects_missing_or_unknown_object_type() {
+    let objects = "one of VIEW or TYPE or COLLATION or TABLE or INDEX or FUNCTION or AGGREGATE or ROLE or POLICY or TRIGGER or CONNECTOR or ICEBERG or SCHEMA or USER or OPERATOR";
+    for (sql, found) in [
+        ("ALTER", "EOF"),
+        ("ALTER 1", "1"),
+        ("ALTER unknown", "unknown"),
+    ] {
+        assert_eq!(
+            all_dialects().parse_sql_statements(sql).unwrap_err(),
+            ParserError::ParserError(format!("Expected: {objects}, found: {found}")),
+        );
+    }
+}
+
+#[test]
 fn test_create_connector() {
     let sql = "CREATE CONNECTOR my_connector \
                TYPE 'jdbc' \
@@ -15207,6 +16079,24 @@ fn test_alias_equal_expr() {
     let sql = r#"SELECT some_alias = (a*b) FROM some_table"#;
     let expected = r#"SELECT (a * b) AS some_alias FROM some_table"#;
     let _ = dialects.one_statement_parses_to(sql, expected);
+
+    let sql = r#"SELECT some_alias = "from" FROM some_table"#;
+    let expected = r#"SELECT "from" AS some_alias FROM some_table"#;
+    let _ = dialects.one_statement_parses_to(sql, expected);
+
+    assert_eq!(
+        dialects
+            .parse_sql_statements("SELECT a = FROM")
+            .unwrap_err(),
+        ParserError::ParserError("Expected an expression, found: FROM".to_string())
+    );
+
+    assert_eq!(
+        dialects
+            .parse_sql_statements("SELECT a = FROM some_table")
+            .unwrap_err(),
+        ParserError::ParserError("Expected an expression, found: FROM".to_string())
+    );
 
     let dialects = all_dialects_where(|d| !d.supports_eq_alias_assignment());
     let sql = r#"SELECT x = (a * b) FROM some_table"#;
@@ -16031,6 +16921,162 @@ fn test_keywords_as_column_names_after_dot() {
 }
 
 #[test]
+fn parse_period_underscore_after_whitespace() {
+    let dialects = all_dialects_where(|d| d.is_identifier_start('_'));
+    dialects.verified_stmt("SELECT t._a FROM t");
+    dialects.one_statement_parses_to("SELECT t ._a FROM t", "SELECT t._a FROM t");
+    dialects.one_statement_parses_to("SELECT t . _a FROM t", "SELECT t._a FROM t");
+
+    let no_expression =
+        || ParserError::ParserError("Expected: an expression, found: .".to_string());
+    for (sql, error) in [
+        ("SELECT ._abc", no_expression()),
+        ("SELECT ._123", no_expression()),
+        (
+            "SELECT 1 ._a",
+            ParserError::TokenizerError(
+                "Unexpected character '_' at Line: 1, Column: 10".to_string(),
+            ),
+        ),
+    ] {
+        assert_eq!(dialects.parse_sql_statements(sql), Err(error), "{sql}");
+    }
+}
+
+#[test]
+fn tokenize_long_whitespace_run_completes() {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    let request_id = "tokenize-long-whitespace-run";
+    let timeout = Duration::from_secs(5);
+    let sql = format!("SELECT{}t._a FROM t", " ".repeat(1024 * 1024));
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let result = Tokenizer::new(&GenericDialect {}, &sql)
+            .tokenize_with_location()
+            .map(drop);
+        let _ = tx.send((request_id, result));
+    });
+
+    let (response_id, result) = rx
+        .recv_timeout(timeout)
+        .expect("tokenizer exceeded the whitespace-run deadline");
+    assert_eq!(response_id, request_id);
+    result.expect("whitespace-separated qualified name should tokenize");
+}
+
+#[test]
+fn tokenize_long_whitespace_run_in_comment_hint_completes() {
+    use core::time::Duration;
+    use std::sync::mpsc;
+    use std::thread;
+
+    let request_id = "tokenize-long-whitespace-run-in-comment-hint";
+    let timeout = Duration::from_secs(5);
+    let sql = format!("SELECT /*!{}t ._a */ FROM t", " ".repeat(1024 * 1024));
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let result = [&GenericDialect {} as &dyn Dialect, &MySqlDialect {}]
+            .into_iter()
+            .try_for_each(|dialect| {
+                Tokenizer::new(dialect, &sql)
+                    .tokenize_with_location()
+                    .map(drop)
+            });
+        let _ = tx.send((request_id, result));
+    });
+
+    let (response_id, result) = rx
+        .recv_timeout(timeout)
+        .expect("hint tokenizer exceeded the whitespace-run deadline");
+    assert_eq!(response_id, request_id);
+    result.expect("whitespace-separated qualified name in hint should tokenize");
+}
+
+#[test]
+fn parse_qualified_underscore_column_from_comment_hint() {
+    let dialects = all_dialects_where(|d| d.supports_multiline_comment_hints());
+    dialects.one_statement_parses_to("SELECT t /*!50110 ._col */ FROM t", "SELECT t._col FROM t");
+}
+
+#[test]
+fn test_qualified_keyword_function_calls() {
+    let pg = TestedDialects::new(vec![Box::new(PostgreSqlDialect {})]);
+
+    for (qualifier, func) in [
+        ("public", "floor"),
+        ("pg_catalog", "floor"),
+        ("pg_catalog", "ceil"),
+    ] {
+        let sql = format!("SELECT {qualifier}.{func}(3)");
+        match expr_from_projection(&pg.verified_only_select(&sql).projection[0]) {
+            Expr::Function(Function {
+                name,
+                args: FunctionArguments::List(FunctionArgumentList { args, .. }),
+                ..
+            }) => {
+                assert_eq!(
+                    name,
+                    &ObjectName::from(vec![Ident::new(qualifier), Ident::new(func)])
+                );
+                assert_eq!(
+                    args,
+                    &[FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::value(
+                        number("3")
+                    )))]
+                );
+            }
+            other => panic!("Expected a qualified function call, got: {other:?}"),
+        }
+    }
+
+    for (func, sql_args) in [
+        ("extract", "3"),
+        ("trim", "'abc'"),
+        ("substring", "'abc', 1, 2"),
+        ("overlay", "'abc', 'xy', 1"),
+        ("position", "'a', 'b'"),
+        ("convert", "'abc', 1"),
+        ("array", "1, 2, 3"),
+    ] {
+        let sql = format!("SELECT pg_catalog.{func}({sql_args})");
+        match expr_from_projection(&pg.verified_only_select(&sql).projection[0]) {
+            Expr::Function(Function { name, .. }) => assert_eq!(
+                name,
+                &ObjectName::from(vec![Ident::new("pg_catalog"), Ident::new(func)])
+            ),
+            other => panic!("Expected a qualified function call, got: {other:?}"),
+        }
+    }
+
+    assert_matches!(
+        pg.parse_sql_statements("SELECT pg_catalog.overlay('abc' PLACING 'xy' FROM 1)"),
+        Err(ParserError::ParserError(_))
+    );
+    assert_matches!(
+        pg.parse_sql_statements("SELECT pg_catalog.position('a' IN 'b')"),
+        Err(ParserError::ParserError(_))
+    );
+
+    match expr_from_projection(&pg.verified_only_select("SELECT FLOOR(3)").projection[0]) {
+        Expr::Floor { .. } => {}
+        other => panic!("Expected Expr::Floor, got: {other:?}"),
+    }
+
+    match expr_from_projection(
+        &pg.verified_only_select("SELECT t.interval FROM tbl t")
+            .projection[0],
+    ) {
+        Expr::CompoundIdentifier(idents) => {
+            assert_eq!(idents, &vec![Ident::new("t"), Ident::new("interval")])
+        }
+        other => panic!("Expected CompoundIdentifier, got: {other:?}"),
+    }
+}
+
+#[test]
 fn parse_create_table_with_bit_types() {
     let sql = "CREATE TABLE t (a BIT, b BIT VARYING, c BIT(42), d BIT VARYING(43))";
     match verified_stmt(sql) {
@@ -16284,6 +17330,43 @@ fn overflow() {
 }
 
 #[test]
+fn long_set_operation_chain_display_does_not_stack_overflow() {
+    // Small stack so the check does not depend on the platform's default
+    // test-thread stack: without recursive-protection this chain overflows it.
+    fn drop_chain_iteratively(mut expr: Box<SetExpr>) {
+        // Iterative teardown: recursive drop glue would also overflow.
+        loop {
+            match *expr {
+                SetExpr::SetOperation { left, .. } => expr = left,
+                _ => return,
+            }
+        }
+    }
+
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let mut sql = String::from("SELECT 1");
+            for i in 2..=25_000 {
+                sql.push_str(&format!(" UNION ALL SELECT {i}"));
+            }
+
+            let mut statements = Parser::parse_sql(&GenericDialect {}, &sql).unwrap();
+            let statement = statements.pop().unwrap();
+            assert_eq!(statement.to_string(), sql);
+
+            let Statement::Query(query) = statement else {
+                panic!("expected a query");
+            };
+            let Query { body, .. } = *query;
+            drop_chain_iteratively(body);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn parse_deeply_nested_boolean_expr_does_not_stackoverflow() {
     fn build_nested_expr(depth: usize) -> String {
         if depth == 0 {
@@ -16314,6 +17397,43 @@ fn parse_deeply_nested_boolean_expr_does_not_stackoverflow() {
 fn parse_select_without_projection() {
     let dialects = all_dialects_where(|d| d.supports_empty_projections());
     dialects.verified_stmt("SELECT FROM users");
+    for sql in [
+        "SELECT",
+        "SELECT ALL",
+        "SELECT INTO t",
+        "SELECT WHERE true",
+        "SELECT GROUP BY () HAVING true",
+        "SELECT WINDOW w AS ()",
+        "SELECT ORDER BY 1",
+        "SELECT LIMIT 1",
+        "SELECT OFFSET 1",
+        "SELECT FETCH FIRST 1 ROWS ONLY",
+        "SELECT FOR UPDATE",
+        "SELECT UNION SELECT",
+        "SELECT INTERSECT SELECT",
+        "SELECT EXCEPT SELECT",
+        "SELECT EXISTS (SELECT)",
+        "SELECT * FROM (SELECT) AS t",
+    ] {
+        dialects.verified_stmt(sql);
+    }
+    assert_eq!(
+        dialects
+            .parse_sql_statements("SELECT; SELECT")
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        dialects.parse_sql_statements("SELECT WHERE").unwrap_err(),
+        ParserError::ParserError("Expected: an expression, found: EOF".to_string())
+    );
+
+    let dialects = all_dialects_where(|d| !d.supports_empty_projections());
+    assert_eq!(
+        dialects.parse_sql_statements("SELECT").unwrap_err(),
+        ParserError::ParserError("Expected: an expression, found: EOF".to_string())
+    );
 }
 
 #[test]
@@ -17295,6 +18415,12 @@ fn parse_pipe_operator_aggregate() {
     dialects.verified_stmt("SELECT * FROM tbl |> AGGREGATE GROUP BY a, b");
     dialects.verified_stmt("SELECT * FROM tbl |> AGGREGATE SUM(c) GROUP BY a, b");
     dialects.verified_stmt("SELECT * FROM tbl |> AGGREGATE SUM(c) ASC");
+    assert_eq!(
+        dialects.parse_sql_statements("SELECT * FROM tbl |> AGGREGATE COUNT(*) AS 1"),
+        Err(ParserError::ParserError(
+            "Expected: an identifier after AS, found: 1".to_string()
+        ))
+    );
 }
 
 #[test]
@@ -17572,128 +18698,134 @@ fn parse_pipeline_operator_negative_tests() {
     );
 
     // Test that CALL without function name fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> CALL")
-        .is_err());
-
-    // Test that CALL without parentheses fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> CALL my_function")
-        .is_err());
-
-    // Test that CALL with invalid function syntax fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> CALL 123invalid")
-        .is_err());
-
-    // Test that CALL with malformed arguments fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> CALL my_function(,)")
-        .is_err());
-
-    // Test that CALL with invalid alias syntax fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> CALL my_function() AS")
-        .is_err());
-
-    // Test that PIVOT without parentheses fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> PIVOT SUM(amount) FOR month IN ('Jan')")
-        .is_err());
-
-    // Test that PIVOT without FOR keyword fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> PIVOT(SUM(amount) month IN ('Jan'))")
-        .is_err());
-
-    // Test that PIVOT without IN keyword fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> PIVOT(SUM(amount) FOR month ('Jan'))")
-        .is_err());
-
-    // Test that PIVOT with empty IN list fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> PIVOT(SUM(amount) FOR month IN ())")
-        .is_err());
-
-    // Test that PIVOT with invalid alias syntax fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> PIVOT(SUM(amount) FOR month IN ('Jan')) AS")
-        .is_err());
-
-    // Test UNPIVOT negative cases
-
-    // Test that UNPIVOT without parentheses fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> UNPIVOT value FOR name IN col1, col2")
-        .is_err());
-
-    // Test that UNPIVOT without FOR keyword fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> UNPIVOT(value name IN (col1, col2))")
-        .is_err());
-
-    // Test that UNPIVOT without IN keyword fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> UNPIVOT(value FOR name (col1, col2))")
-        .is_err());
-
-    // Test that UNPIVOT with missing value column fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> UNPIVOT(FOR name IN (col1, col2))")
-        .is_err());
-
-    // Test that UNPIVOT with missing name column fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> UNPIVOT(value FOR IN (col1, col2))")
-        .is_err());
-
-    // Test that UNPIVOT with empty IN list fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> UNPIVOT(value FOR name IN ())")
-        .is_err());
-
-    // Test that UNPIVOT with invalid alias syntax fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> UNPIVOT(value FOR name IN (col1, col2)) AS")
-        .is_err());
-
-    // Test that UNPIVOT with missing closing parenthesis fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> UNPIVOT(value FOR name IN (col1, col2)")
-        .is_err());
-
-    // Test that JOIN without table name fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> JOIN ON users.id = orders.user_id")
-        .is_err());
-
-    // Test that CROSS JOIN with ON condition fails
-    assert!(dialects
-        .parse_sql_statements(
-            "SELECT * FROM users |> CROSS JOIN orders ON users.id = orders.user_id"
-        )
-        .is_err());
-
-    // Test that CROSS JOIN with USING condition fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> CROSS JOIN orders USING (user_id)")
-        .is_err());
-
-    // Test that JOIN with empty USING list fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> JOIN orders USING ()")
-        .is_err());
-
-    // Test that JOIN with malformed ON condition fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> JOIN orders ON")
-        .is_err());
-
-    // Test that JOIN with invalid USING syntax fails
-    assert!(dialects
-        .parse_sql_statements("SELECT * FROM users |> JOIN orders USING user_id")
-        .is_err());
+    for (sql, err_msg) in [
+        (
+            "SELECT * FROM users |> CALL",
+            "Expected: identifier, found: EOF",
+        ),
+        // Test that CALL without parentheses fails
+        (
+            "SELECT * FROM users |> CALL my_function",
+            "Expected: (, found: EOF",
+        ),
+        // Test that CALL with invalid function syntax fails
+        (
+            "SELECT * FROM users |> CALL 123 invalid",
+            "Expected: identifier, found: 123",
+        ),
+        // Test that CALL with malformed arguments fails
+        (
+            "SELECT * FROM users |> CALL my_function(,)",
+            "Expected: an expression, found: ,",
+        ),
+        // Test that CALL with invalid alias syntax fails
+        (
+            "SELECT * FROM users |> CALL my_function() AS",
+            "Expected: identifier, found: EOF",
+        ),
+        // Test that PIVOT without parentheses fails
+        (
+            "SELECT * FROM users |> PIVOT SUM(amount) FOR month IN ('Jan')",
+            "Expected: (, found: SUM",
+        ),
+        // Test that PIVOT without FOR keyword fails
+        (
+            "SELECT * FROM users |> PIVOT(SUM(amount) month IN ('Jan'))",
+            "Expected: FOR, found: IN",
+        ),
+        // Test that PIVOT without IN keyword fails
+        (
+            "SELECT * FROM users |> PIVOT(SUM(amount) FOR month ('Jan'))",
+            "Expected: IN, found: (",
+        ),
+        // Test that PIVOT with empty IN list fails
+        (
+            "SELECT * FROM users |> PIVOT(SUM(amount) FOR month IN ())",
+            "Expected: an expression, found: )",
+        ),
+        // Test that PIVOT with invalid alias syntax fails
+        (
+            "SELECT * FROM users |> PIVOT(SUM(amount) FOR month IN ('Jan')) AS",
+            "Expected: identifier, found: EOF",
+        ),
+        // Test UNPIVOT negative cases
+        // Test that UNPIVOT without parentheses fails
+        (
+            "SELECT * FROM users |> UNPIVOT value FOR name IN col1, col2",
+            "Expected: (, found: value",
+        ),
+        // Test that UNPIVOT without FOR keyword fails
+        (
+            "SELECT * FROM users |> UNPIVOT(value name IN (col1, col2))",
+            "Expected: FOR, found: name",
+        ),
+        // Test that UNPIVOT without IN keyword fails
+        (
+            "SELECT * FROM users |> UNPIVOT(value FOR name (col1, col2))",
+            "Expected: IN, found: (",
+        ),
+        // Test that UNPIVOT with missing value column fails
+        (
+            "SELECT * FROM users |> UNPIVOT(FOR name IN (col1, col2))",
+            "Expected: FOR, found: name",
+        ),
+        // Test that UNPIVOT with missing name column fails
+        (
+            "SELECT * FROM users |> UNPIVOT(value FOR IN (col1, col2))",
+            "Expected: IN, found: (",
+        ),
+        // Test that UNPIVOT with empty IN list fails
+        (
+            "SELECT * FROM users |> UNPIVOT(value FOR name IN ())",
+            "Expected: identifier, found: )",
+        ),
+        // Test that UNPIVOT with invalid alias syntax fails
+        (
+            "SELECT * FROM users |> UNPIVOT(value FOR name IN (col1, col2)) AS",
+            "Expected: identifier, found: EOF",
+        ),
+        // Test that UNPIVOT with missing closing parenthesis fails
+        (
+            "SELECT * FROM users |> UNPIVOT(value FOR name IN (col1, col2)",
+            "Expected: ), found: EOF",
+        ),
+        // Test that JOIN without table name fails
+        (
+            "SELECT * FROM users |> JOIN",
+            "Expected: identifier, found: EOF",
+        ),
+        // Test that CROSS JOIN with ON condition fails
+        (
+            "SELECT * FROM users |> CROSS JOIN orders ON users.id = orders.user_id",
+            "Expected: end of statement, found: ON",
+        ),
+        // Test that CROSS JOIN with USING condition fails
+        (
+            "SELECT * FROM users |> CROSS JOIN orders USING (user_id)",
+            "Expected: end of statement, found: USING",
+        ),
+        // Test that JOIN with empty USING list fails
+        (
+            "SELECT * FROM users |> JOIN orders USING ()",
+            "Expected: identifier, found: )",
+        ),
+        // Test that JOIN with malformed ON condition fails
+        (
+            "SELECT * FROM users |> JOIN orders ON",
+            "Expected: an expression, found: EOF",
+        ),
+        // Test that JOIN with invalid USING syntax fails
+        (
+            "SELECT * FROM users |> JOIN orders USING user_id",
+            "Expected: a list of columns in parentheses, found: user_id",
+        ),
+    ] {
+        let res = dialects.parse_sql_statements(sql);
+        assert_eq!(
+            ParserError::ParserError(err_msg.to_string()),
+            res.unwrap_err()
+        );
+    }
 }
 
 #[test]
@@ -17893,7 +19025,7 @@ fn test_nested_join_without_parentheses() {
                         with_ordinality: false,
                         json_path: None,
                         sample: None,
-                        index_hints: vec![],
+                        index_directives: vec![],
                     },
                     joins: vec![Join {
                         relation: TableFactor::Table {
@@ -17906,7 +19038,7 @@ fn test_nested_join_without_parentheses() {
                             with_ordinality: false,
                             json_path: None,
                             sample: None,
-                            index_hints: vec![],
+                            index_directives: vec![],
                         },
                         global: false,
                         join_operator: JoinOperator::Inner(JoinConstraint::On(Expr::BinaryOp {
@@ -17960,7 +19092,7 @@ fn test_nested_join_without_parentheses() {
                         with_ordinality: false,
                         json_path: None,
                         sample: None,
-                        index_hints: vec![],
+                        index_directives: vec![],
                     },
                     joins: vec![Join {
                         relation: TableFactor::Table {
@@ -17973,7 +19105,7 @@ fn test_nested_join_without_parentheses() {
                             with_ordinality: false,
                             json_path: None,
                             sample: None,
-                            index_hints: vec![],
+                            index_directives: vec![],
                         },
                         global: false,
                         join_operator: JoinOperator::Join(JoinConstraint::On(Expr::BinaryOp {
@@ -18027,7 +19159,7 @@ fn test_nested_join_without_parentheses() {
                         with_ordinality: false,
                         json_path: None,
                         sample: None,
-                        index_hints: vec![],
+                        index_directives: vec![],
                     },
                     joins: vec![Join {
                         relation: TableFactor::Table {
@@ -18040,7 +19172,7 @@ fn test_nested_join_without_parentheses() {
                             with_ordinality: false,
                             json_path: None,
                             sample: None,
-                            index_hints: vec![],
+                            index_directives: vec![],
                         },
                         global: false,
                         join_operator: JoinOperator::Left(JoinConstraint::On(Expr::BinaryOp {
@@ -18094,7 +19226,7 @@ fn test_nested_join_without_parentheses() {
                         with_ordinality: false,
                         json_path: None,
                         sample: None,
-                        index_hints: vec![],
+                        index_directives: vec![],
                     },
                     joins: vec![Join {
                         relation: TableFactor::Table {
@@ -18107,7 +19239,7 @@ fn test_nested_join_without_parentheses() {
                             with_ordinality: false,
                             json_path: None,
                             sample: None,
-                            index_hints: vec![],
+                            index_directives: vec![],
                         },
                         global: false,
                         join_operator: JoinOperator::Right(JoinConstraint::On(Expr::BinaryOp {
@@ -18161,7 +19293,7 @@ fn test_nested_join_without_parentheses() {
                         with_ordinality: false,
                         json_path: None,
                         sample: None,
-                        index_hints: vec![],
+                        index_directives: vec![],
                     },
                     joins: vec![Join {
                         relation: TableFactor::Table {
@@ -18174,7 +19306,7 @@ fn test_nested_join_without_parentheses() {
                             with_ordinality: false,
                             json_path: None,
                             sample: None,
-                            index_hints: vec![],
+                            index_directives: vec![],
                         },
                         global: false,
                         join_operator: JoinOperator::FullOuter(JoinConstraint::On(
@@ -19053,14 +20185,21 @@ fn test_parse_semantic_view_table_factor() {
         }
     }
 
-    let invalid_sqls = [
-        "SELECT * FROM SEMANTIC_VIEW(model DIMENSIONS dim1 INVALID inv1)",
-        "SELECT * FROM SEMANTIC_VIEW(model DIMENSIONS dim1 DIMENSIONS dim2)",
-    ];
-
-    for sql in invalid_sqls {
-        let result = dialects.parse_sql_statements(sql);
-        assert!(result.is_err(), "Expected error for invalid SQL: {sql}");
+    for (sql, err) in [
+        (
+            "SELECT * FROM SEMANTIC_VIEW(model DIMENSIONS dim1 INVALID inv1)",
+            "Expected one of DIMENSIONS, METRICS, FACTS or WHERE, got INVALID",
+        ),
+        (
+            "SELECT * FROM SEMANTIC_VIEW(model DIMENSIONS dim1 DIMENSIONS dim2)",
+            "DIMENSIONS clause can only be specified once",
+        ),
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql),
+            Err(ParserError::ParserError(err.to_string())),
+            "{sql}"
+        );
     }
 
     let ast_sql = r#"SELECT * FROM SEMANTIC_VIEW(
@@ -19471,11 +20610,7 @@ fn test_parse_alter_user() {
 
 #[test]
 fn parse_generic_unary_ops() {
-    let unary_ops = &[
-        ("~", UnaryOperator::BitwiseNot),
-        ("-", UnaryOperator::Minus),
-        ("+", UnaryOperator::Plus),
-    ];
+    let unary_ops = &[("-", UnaryOperator::Minus), ("+", UnaryOperator::Plus)];
     for (str_op, op) in unary_ops {
         let select = verified_only_select(&format!("SELECT {}expr", str_op));
         assert_eq!(
@@ -19486,6 +20621,16 @@ fn parse_generic_unary_ops() {
             select.projection[0]
         );
     }
+
+    let select = verified_only_select("SELECT ~ expr");
+    assert_eq!(
+        UnnamedExpr(UnaryOp {
+            op: UnaryOperator::BitwiseNot,
+            expr: Box::new(Identifier(Ident::new("expr"))),
+        }),
+        select.projection[0]
+    );
+    one_statement_parses_to("SELECT ~expr", "SELECT ~ expr");
 }
 
 #[test]
@@ -19545,10 +20690,12 @@ fn test_parse_set_session_authorization() {
 #[test]
 fn test_set_authorization_without_scope_errors() {
     // This should return a parser error, not panic.
-    let res = parse_sql_statements("SET AUTHORIZATION TIME TIME");
-    assert!(
-        res.is_err(),
-        "SET AUTHORIZATION without a scope modifier (e.g. SESSION) should error"
+    assert_eq!(
+        parse_sql_statements("SET AUTHORIZATION TIME TIME"),
+        Err(ParserError::ParserError(
+            "Expected: SESSION, LOCAL, or other scope modifier before AUTHORIZATION, found: AUTHORIZATION"
+                .to_string()
+        ))
     );
 }
 
@@ -19575,6 +20722,8 @@ fn parse_select_parenthesized_wildcard() {
 fn parse_overlap_as_bool_and() {
     let dialects = all_dialects_where(|d| d.supports_double_ampersand_operator());
     dialects.one_statement_parses_to("SELECT x && y", "SELECT x AND y");
+    dialects.one_statement_parses_to("SELECT x = a && c", "SELECT x = a AND c");
+    dialects.one_statement_parses_to("SELECT x < 1 && y > 2", "SELECT x < 1 AND y > 2");
 }
 
 #[test]
@@ -19760,10 +20909,11 @@ fn parse_select_item_multi_column_alias() {
     all_dialects_where(|d| d.supports_select_item_multi_column_alias())
         .verified_stmt("SELECT stack(2, 'a', 'b', 'c', 'd') AS (col1, col2) FROM t");
 
-    assert!(
+    assert_eq!(
+        ParserError::ParserError("Expected: an identifier after AS, found: (".to_string()),
         all_dialects_where(|d| !d.supports_select_item_multi_column_alias())
             .parse_sql_statements("SELECT stack(2, 'a', 'b') AS (col1, col2)")
-            .is_err()
+            .unwrap_err()
     );
 }
 
@@ -19784,9 +20934,12 @@ fn parse_aliased_function_args() {
     dialects.verified_only_select("SELECT foo(lower(a) AS x, b AS y)");
     dialects.verified_only_select(r#"SELECT foo(a AS "x y")"#);
     dialects.verified_only_select("SELECT foo(bar(a AS x) AS y)");
-    assert!(all_dialects_except(|d| d.supports_aliased_function_args())
-        .parse_sql_statements("SELECT foo(a AS x)")
-        .is_err());
+    assert_eq!(
+        ParserError::ParserError("Expected: ), found: AS".to_string()),
+        all_dialects_except(|d| d.supports_aliased_function_args())
+            .parse_sql_statements("SELECT foo(a AS x)")
+            .unwrap_err()
+    );
 }
 
 #[test]
@@ -19821,9 +20974,12 @@ fn parse_xmlparse() {
     }
 
     // XMLPARSE needs both a mode word and a value.
-    assert!(dialects
-        .parse_sql_statements("SELECT xmlparse('<a/>')")
-        .is_err());
+    assert_eq!(
+        ParserError::ParserError("Expected: an expression, found: )".to_string()),
+        dialects
+            .parse_sql_statements("SELECT xmlparse('<a/>')")
+            .unwrap_err()
+    );
 
     // Going through the ordinary function-call path, XMLPARSE accepts the same
     // trailing clauses as any other function.
@@ -19834,9 +20990,12 @@ fn parse_xmlparse() {
     // and the special `CONTENT <expr>` syntax is rejected.
     let others = all_dialects_except(|d| d.supports_xml_expressions());
     others.verified_only_select("SELECT xmlparse(1)");
-    assert!(others
-        .parse_sql_statements("SELECT xmlparse(content '<a/>')")
-        .is_err());
+    assert_eq!(
+        ParserError::ParserError("Expected: ), found: '<a/>'".to_string()),
+        others
+            .parse_sql_statements("SELECT xmlparse(content '<a/>')")
+            .unwrap_err()
+    );
 }
 
 /// Regression test for the 2^N parse-time blowup in `parse_compound_expr` on
@@ -20222,15 +21381,941 @@ fn parse_alter_column_comment() {
         "ALTER TABLE a.b.t ALTER COLUMN c COMMENT '手机绑定状态，1没有绑定'",
     );
 
-    assert!(dialects
-        .parse_sql_statements("ALTER TABLE t ALTER COLUMN c COMMENT")
-        .is_err());
-    assert!(dialects
-        .parse_sql_statements("ALTER TABLE t ALTER COLUMN c COMMENT c2")
-        .is_err());
+    assert_eq!(
+        dialects.parse_sql_statements("ALTER TABLE t ALTER COLUMN c COMMENT"),
+        Err(ParserError::ParserError(
+            "Expected: string literal, found: EOF".to_string()
+        ))
+    );
+    assert_eq!(
+        dialects.parse_sql_statements("ALTER TABLE t ALTER COLUMN c COMMENT c2"),
+        Err(ParserError::ParserError(
+            "Expected: string literal, found: c2".to_string()
+        ))
+    );
 
     let unsupported = all_dialects_where(|d| !d.supports_alter_column_comment());
     for dialect in &unsupported.dialects {
-        assert!(Parser::parse_sql(&**dialect, "ALTER TABLE t ALTER COLUMN c COMMENT 'x'").is_err());
+        // Dialects word the list of accepted ALTER COLUMN actions differently.
+        let Err(ParserError::ParserError(message)) =
+            Parser::parse_sql(&**dialect, "ALTER TABLE t ALTER COLUMN c COMMENT 'x'")
+        else {
+            panic!("expected a parser error for {dialect:?}");
+        };
+        assert!(
+            message.ends_with("after ALTER COLUMN, found: COMMENT at Line: 1, Column: 30"),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn parse_bitwise_not_renders_apart_from_operand() {
+    all_dialects().verified_stmt("SELECT ~ -1");
+    all_dialects().verified_stmt("SELECT ~ ~ 1");
+}
+
+#[test]
+fn parse_unary_minus_never_renders_line_comment() {
+    all_dialects().verified_stmt("SELECT - -1");
+    all_dialects().verified_stmt("SELECT - - -1");
+    all_dialects().verified_stmt("SELECT -1");
+    all_dialects().verified_stmt("SELECT -x");
+}
+
+#[test]
+fn parse_table_preserves_quotes_and_trailing_tokens() {
+    let dialects = TestedDialects::new(vec![
+        Box::new(AnsiDialect {}),
+        Box::new(GenericDialect {}),
+        Box::new(PostgreSqlDialect {}),
+        Box::new(DuckDbDialect {}),
+        Box::new(SnowflakeDialect {}),
+    ]);
+    dialects.verified_stmt(r#"CREATE TABLE new_table AS TABLE "old_table""#);
+    dialects.verified_stmt(r#"CREATE TABLE new_table AS TABLE "schema_name"."old_table""#);
+    dialects.verified_stmt("CREATE TABLE new_table AS TABLE old_table ORDER BY x");
+    dialects.verified_stmt("CREATE TABLE new_table AS TABLE old_table LIMIT 10");
+    dialects.verified_stmt("SELECT * FROM (TABLE old_table ORDER BY x)");
+
+    let backtick_dialects = TestedDialects::new(vec![
+        Box::new(AnsiDialect {}),
+        Box::new(GenericDialect {}),
+        Box::new(MySqlDialect {}),
+    ]);
+    backtick_dialects.verified_stmt("CREATE TABLE new_table AS TABLE `old_table`");
+    backtick_dialects.verified_stmt("CREATE TABLE new_table AS TABLE `%mpty`");
+    backtick_dialects.verified_stmt("INSERT INTO t TABLE `%mpty`");
+
+    let err = dialects
+        .parse_sql_statements("CREATE TABLE new_table AS TABLE %mpty")
+        .unwrap_err();
+    assert_eq!(
+        ParserError::ParserError("Expected: identifier, found: %".to_string()),
+        err
+    );
+
+    let err = backtick_dialects
+        .parse_sql_statements("CREATE TABLE new_table AS TABLE `x` ORE")
+        .unwrap_err();
+    assert_eq!(
+        ParserError::ParserError("Expected: end of statement, found: ORE".to_string()),
+        err
+    );
+}
+
+#[test]
+fn parse_hex_string_literal_display_escaping() {
+    all_dialects().verified_stmt("SELECT X''''");
+    all_dialects().verified_stmt("SELECT X'ab''cd'");
+    all_dialects().one_statement_parses_to("SELECT x'''' N", "SELECT X'''' AS N");
+}
+
+#[test]
+fn on_keyword_rejected_as_table_name() {
+    let dialects = all_dialects_where(|d| !d.is_table_factor(&Keyword::ON, &mut Parser::new(d)));
+    for sql in [
+        "SELECT * FROM ON",
+        "SELECT * FROM t JOIN ON",
+        "SELECT * FROM t JOIN ON u ON TRUE",
+    ] {
+        assert_eq!(
+            ParserError::ParserError("Expected: table name, found: ON".to_string()),
+            dialects.parse_sql_statements(sql).unwrap_err()
+        );
+    }
+}
+
+#[test]
+fn quoted_on_allowed_as_table_name() {
+    let dialects = all_dialects_where(|d| d.is_delimited_identifier_start('"'));
+    dialects.verified_stmt(r#"SELECT * FROM "ON""#);
+    let dialects = all_dialects_where(|d| d.is_delimited_identifier_start('`'));
+    dialects.verified_stmt("SELECT * FROM `ON`");
+}
+
+#[test]
+fn parse_stage_table_factor() {
+    let supported = all_dialects_where(|d| d.supports_stages());
+    supported.verified_stmt("SELECT * FROM @stage");
+    supported.verified_stmt("SELECT * FROM @stage, my_table");
+
+    let unsupported = all_dialects_where(|d| !d.supports_stages() && !d.is_identifier_start('@'));
+    assert_eq!(
+        unsupported
+            .parse_sql_statements("SELECT * FROM @stage")
+            .unwrap_err(),
+        ParserError::ParserError("Expected: identifier, found: @".to_string()),
+    );
+}
+
+#[test]
+fn parse_create_rule() {
+    let sql = "CREATE RULE r AS ON DELETE TO docs DO INSTEAD NOTHING";
+    match all_dialects().verified_stmt(sql) {
+        Statement::CreateRule(CreateRule {
+            or_replace,
+            name,
+            event,
+            table_name,
+            condition,
+            do_kind,
+            action,
+        }) => {
+            assert!(!or_replace);
+            assert_eq!(name.to_string(), "r");
+            assert_eq!(event, CreateRuleEvent::Delete);
+            assert_eq!(table_name.to_string(), "docs");
+            assert!(condition.is_none());
+            assert_eq!(do_kind, Some(CreateRuleDoKind::Instead));
+            assert_eq!(action, CreateRuleAction::Nothing);
+        }
+        _ => unreachable!("Expected CREATE RULE"),
+    }
+
+    all_dialects().verified_stmt("CREATE OR REPLACE RULE r AS ON SELECT TO t DO ALSO NOTHING");
+    all_dialects().verified_stmt("CREATE RULE r AS ON INSERT TO s1.t DO NOTHING");
+    all_dialects().verified_stmt(
+        "CREATE RULE r AS ON UPDATE TO t WHERE quantity > 100 DO ALSO INSERT INTO audit (id) VALUES (1)",
+    );
+    all_dialects().verified_stmt(
+        "CREATE RULE r AS ON DELETE TO t DO INSTEAD (UPDATE t2 SET deleted = 1 WHERE id = 1; DELETE FROM t3)",
+    );
+
+    // A trailing semicolon inside a parenthesized action list is accepted and
+    // normalized away.
+    all_dialects().one_statement_parses_to(
+        "CREATE RULE r AS ON DELETE TO t DO INSTEAD (DELETE FROM t2;)",
+        "CREATE RULE r AS ON DELETE TO t DO INSTEAD (DELETE FROM t2)",
+    );
+
+    // invalid event
+    assert_eq!(
+        all_dialects()
+            .parse_sql_statements("CREATE RULE r AS ON TRUNCATE TO t DO NOTHING")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: one of SELECT or INSERT or UPDATE or DELETE, found: TRUNCATE"
+    );
+
+    // missing DO clause
+    assert_eq!(
+        all_dialects()
+            .parse_sql_statements("CREATE RULE r AS ON DELETE TO t")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: DO, found: EOF"
+    );
+
+    // missing table name
+    assert_eq!(
+        all_dialects()
+            .parse_sql_statements("CREATE RULE r AS ON DELETE DO NOTHING")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: TO, found: DO"
+    );
+}
+
+#[test]
+fn parse_create_rule_action_boundaries() {
+    let dialects = all_dialects();
+    let Statement::CreateRule(CreateRule {
+        action: CreateRuleAction::Statements(commands),
+        ..
+    }) = dialects.verified_stmt("CREATE RULE r AS ON INSERT TO t DO ()")
+    else {
+        panic!("expected a rule with a command list");
+    };
+    assert!(commands.is_empty());
+
+    let statements = dialects
+        .parse_sql_statements(
+            "CREATE RULE r AS ON INSERT TO t DO (;; INSERT INTO audit VALUES (1);; DELETE FROM pending;;); SELECT 9",
+        )
+        .unwrap();
+    assert_eq!(
+        statements.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        [
+            "CREATE RULE r AS ON INSERT TO t DO (INSERT INTO audit VALUES (1); DELETE FROM pending)",
+            "SELECT 9",
+        ]
+    );
+}
+
+#[test]
+fn parse_create_rule_invalid_components() {
+    let dialects = all_dialects();
+    for (sql, expected) in [
+        ("CREATE RULE", "Expected: identifier, found: EOF"),
+        (
+            "CREATE RULE r ON UPDATE TO t DO NOTHING",
+            "Expected: AS, found: ON",
+        ),
+        (
+            "CREATE RULE r AS UPDATE TO t DO NOTHING",
+            "Expected: ON, found: UPDATE",
+        ),
+        (
+            "CREATE RULE r AS ON 1 TO t DO NOTHING",
+            "Expected: one of SELECT or INSERT or UPDATE or DELETE, found: 1",
+        ),
+        (
+            "CREATE RULE r AS ON INSERT TO",
+            "Expected: identifier, found: EOF",
+        ),
+        (
+            "CREATE RULE r AS ON INSERT TO t WHERE (",
+            "Expected: an expression, found: EOF",
+        ),
+        (
+            "CREATE RULE r AS ON INSERT TO t DO",
+            "Expected: an SQL statement, found: EOF",
+        ),
+        (
+            "CREATE RULE r AS ON INSERT TO t DO (BOGUS)",
+            "Expected: an SQL statement, found: BOGUS",
+        ),
+        (
+            "CREATE RULE r AS ON INSERT TO t DO (SELECT 1 SELECT 2)",
+            "Expected: ), found: SELECT",
+        ),
+        (
+            "CREATE RULE r AS ON INSERT TO t DO (SELECT 1",
+            "Expected: ), found: EOF",
+        ),
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql),
+            Err(ParserError::ParserError(expected.to_string())),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn parse_create_rule_spans() {
+    let dialects = all_dialects();
+    for (sql, end) in [
+        (
+            "CREATE RULE r AS ON INSERT TO s.t DO NOTHING",
+            Location::new(1, 34),
+        ),
+        (
+            "CREATE RULE r AS ON INSERT TO s.t WHERE new.id > 0 DO NOTHING",
+            Location::new(1, 51),
+        ),
+        (
+            "CREATE RULE r AS ON INSERT TO s.t DO SELECT 1",
+            Location::new(1, 46),
+        ),
+        (
+            "CREATE RULE r AS ON INSERT TO s.t DO ()",
+            Location::new(1, 34),
+        ),
+        (
+            r#"CREATE RULE r AS ON UPDATE TO s.t
+WHERE old.id = new.id
+DO ALSO (
+  UPDATE audit SET id = new.id;
+  DELETE FROM archive WHERE id = old.id
+)"#,
+            Location::new(5, 40),
+        ),
+    ] {
+        for dialect in &dialects.dialects {
+            let statements = Parser::parse_sql(dialect.as_ref(), sql).unwrap();
+            assert_eq!(
+                statements[0].span(),
+                Span::new(Location::new(1, 13), end),
+                "{dialect:?} {sql}"
+            );
+        }
+    }
+}
+
+#[test]
+fn display_create_rule_propagates_write_errors() {
+    use core::fmt::{self, Write};
+
+    struct RejectingWriter<'a>(&'a str);
+
+    impl Write for RejectingWriter<'_> {
+        fn write_str(&mut self, value: &str) -> fmt::Result {
+            if value.contains(self.0) {
+                Err(fmt::Error)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    let dialects = all_dialects();
+    let statement = dialects.verified_stmt(
+        "CREATE OR REPLACE RULE r AS ON UPDATE TO t WHERE id > 0 DO ALSO (DELETE FROM audit)",
+    );
+    for rejected in ["CREATE ", "r", "UPDATE", "t", ">", " DO", "ALSO", "(", ")"] {
+        let mut writer = RejectingWriter(rejected);
+        assert_eq!(write!(writer, "{statement}"), Err(fmt::Error));
+    }
+    for (sql, rejected) in [
+        ("CREATE RULE r AS ON INSERT TO t DO NOTHING", "NOTHING"),
+        (
+            "CREATE RULE r AS ON DELETE TO t DO DELETE FROM audit",
+            "audit",
+        ),
+    ] {
+        let statement = dialects.verified_stmt(sql);
+        let mut writer = RejectingWriter(rejected);
+        assert_eq!(write!(writer, "{statement}"), Err(fmt::Error));
+    }
+}
+
+#[test]
+fn parse_alter_table_column_position() {
+    let dialects = all_dialects_where(|d| d.supports_alter_column_position());
+    match alter_table_op(dialects.verified_stmt("ALTER TABLE tab ADD COLUMN c INT FIRST")) {
+        AlterTableOperation::AddColumn {
+            column_position, ..
+        } => assert_eq!(column_position, Some(MySQLColumnPosition::First)),
+        _ => unreachable!(),
+    }
+    match alter_table_op(dialects.verified_stmt("ALTER TABLE tab ADD COLUMN c INT AFTER b")) {
+        AlterTableOperation::AddColumn {
+            column_position, ..
+        } => assert_eq!(
+            column_position,
+            Some(MySQLColumnPosition::After(Ident::new("b")))
+        ),
+        _ => unreachable!(),
+    }
+    match alter_table_op(dialects.verified_stmt("ALTER TABLE tab MODIFY COLUMN c INT AFTER b")) {
+        AlterTableOperation::ModifyColumn {
+            column_position, ..
+        } => assert_eq!(
+            column_position,
+            Some(MySQLColumnPosition::After(Ident::new("b")))
+        ),
+        _ => unreachable!(),
+    }
+    assert_eq!(
+        ParserError::ParserError("Expected: identifier, found: EOF".to_string()),
+        dialects
+            .parse_sql_statements("ALTER TABLE tab ADD COLUMN c INT AFTER")
+            .unwrap_err()
+    );
+
+    let dialects = all_dialects_where(|d| !d.supports_alter_column_position());
+    for (sql, found) in [
+        ("ALTER TABLE tab ADD COLUMN c INT FIRST", "FIRST"),
+        ("ALTER TABLE tab ADD COLUMN c INT AFTER b", "AFTER"),
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql),
+            Err(ParserError::ParserError(format!(
+                "Expected: end of statement, found: {found}"
+            ))),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn parse_compound_field_access_numeric_display() {
+    all_dialects().verified_stmt("SELECT 1 . i");
+    all_dialects().verified_stmt("SELECT (1 . i)");
+    all_dialects().verified_stmt("SELECT 1 . 2");
+    all_dialects().verified_stmt("SELECT (a . 1 . b)");
+    all_dialects().verified_stmt("SELECT 1 . i.j");
+    all_dialects().verified_stmt("SELECT 1 . 2 . 3");
+    all_dialects().verified_stmt("SELECT a.b.c");
+
+    let err = all_dialects_where(|d| !d.supports_numeric_prefix())
+        .parse_sql_statements("SELECT (1.i)")
+        .unwrap_err();
+    assert_eq!(
+        err,
+        ParserError::ParserError("Expected: ), found: i".to_string())
+    );
+}
+
+#[test]
+fn parse_placeholder_disallows_quoted_ident() {
+    let dialects = TestedDialects::new(vec![
+        Box::new(AnsiDialect {}),
+        Box::new(GenericDialect {}),
+        Box::new(SnowflakeDialect {}),
+        Box::new(SQLiteDialect {}),
+    ]);
+    // Valid placeholders roundtrip
+    dialects.verified_stmt("SELECT :x");
+
+    // Quoted identifiers are not valid placeholders
+    let err = dialects.parse_sql_statements("SELECT :`a`").unwrap_err();
+    assert_eq!(
+        ParserError::ParserError("Expected: placeholder, found: `a`".to_string()),
+        err
+    );
+    let err = dialects.parse_sql_statements("SELECT :\"a\"").unwrap_err();
+    assert_eq!(
+        ParserError::ParserError("Expected: placeholder, found: \"a\"".to_string()),
+        err
+    );
+    let err = dialects.parse_sql_statements("SELECT:` a` a").unwrap_err();
+    assert_eq!(
+        ParserError::ParserError("Expected: placeholder, found: ` a`".to_string()),
+        err
+    );
+
+    let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
+    ansi.verified_stmt("SELECT @x");
+    let err = ansi.parse_sql_statements("SELECT @`a`").unwrap_err();
+    assert_eq!(
+        ParserError::ParserError("Expected: placeholder, found: `a`".to_string()),
+        err
+    );
+    let err = ansi.parse_sql_statements("SELECT @\"a\"").unwrap_err();
+    assert_eq!(
+        ParserError::ParserError("Expected: placeholder, found: \"a\"".to_string()),
+        err
+    );
+}
+
+#[test]
+fn parse_in_list_leading_subquery() {
+    let x = || Box::new(Expr::Identifier(Ident::new("x")));
+    let subquery = || Expr::Subquery(Box::new(verified_query("SELECT a FROM u")));
+
+    let select = verified_only_select("SELECT * FROM t WHERE x IN ((SELECT a FROM u), 1)");
+    assert_eq!(
+        Expr::In {
+            expr: x(),
+            target: InTarget::List(vec![subquery(), Expr::value(number("1"))]),
+            negated: false,
+            global: false,
+        },
+        select.selection.unwrap()
+    );
+
+    let select = verified_only_select("SELECT * FROM t WHERE x NOT IN (((SELECT a FROM u)), 1)");
+    assert_eq!(
+        Expr::In {
+            expr: x(),
+            target: InTarget::List(vec![
+                Expr::Nested(Box::new(subquery())),
+                Expr::value(number("1"))
+            ]),
+            negated: true,
+            global: false,
+        },
+        select.selection.unwrap()
+    );
+
+    let select = verified_only_select("SELECT * FROM t WHERE x IN ((SELECT a FROM u) + 1, 2)");
+    assert_eq!(
+        Expr::In {
+            expr: x(),
+            target: InTarget::List(vec![
+                Expr::BinaryOp {
+                    left: Box::new(subquery()),
+                    op: BinaryOperator::Plus,
+                    right: Box::new(Expr::value(number("1"))),
+                },
+                Expr::value(number("2"))
+            ]),
+            negated: false,
+            global: false,
+        },
+        select.selection.unwrap()
+    );
+
+    let select = pg_and_generic()
+        .verified_only_select("SELECT * FROM t WHERE x IN ((SELECT a FROM u)[1], 2)");
+    assert_matches!(
+        select.selection.as_ref(),
+        Some(Expr::In { target: InTarget::List(list), .. })
+            if matches!(&list[0], Expr::CompoundFieldAccess { root, .. } if **root == subquery())
+    );
+
+    let select = verified_only_select("SELECT * FROM t WHERE x IN ((SELECT a FROM u))");
+    assert_eq!(
+        Expr::In {
+            expr: x(),
+            target: InTarget::Subquery(Box::new(verified_query("(SELECT a FROM u)"))),
+            negated: false,
+            global: false,
+        },
+        select.selection.unwrap()
+    );
+
+    assert_eq!(
+        ParserError::ParserError("Expected: ), found: 1".to_string()),
+        parse_sql_statements("SELECT * FROM t WHERE x IN ((SELECT a FROM u) 1)").unwrap_err()
+    );
+    assert_eq!(
+        ParserError::ParserError("Expected: ), found: EOF".to_string()),
+        parse_sql_statements("SELECT * FROM t WHERE x IN (SELECT a FROM u").unwrap_err()
+    );
+    assert_eq!(
+        ParserError::ParserError("Expected: ), found: EOF".to_string()),
+        parse_sql_statements("SELECT * FROM t WHERE x IN ((SELECT a FROM u), 1").unwrap_err()
+    );
+    // The inner `IN` is read again for the outer list after its subquery
+    // arm was cached as failed.
+    assert_eq!(
+        ParserError::ParserError("Expected: ), found: EOF".to_string()),
+        parse_sql_statements("SELECT * FROM t WHERE x IN ((SELECT 1 FROM u WHERE y IN (SELECT 2")
+            .unwrap_err()
+    );
+}
+
+/// Hang guard for `IN` lists nested in the leading subquery of an enclosing
+/// `IN` list, where every level is first tried as the whole subquery and then
+/// read again as a list item.
+#[test]
+fn parse_in_list_nested_leading_subquery_no_exponential_blowup() {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    for level in [
+        "x IN ((SELECT {}), 1)",
+        "x IN ((SELECT {}) + 1, 2)",
+        "x IN (((SELECT {}) + 1), 2)",
+    ] {
+        let sql = format!(
+            "SELECT {}",
+            (0..30).fold("1".to_string(), |inner, _| level.replace("{}", &inner))
+        );
+
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let result = Parser::new(&GenericDialect {})
+                .with_recursion_limit(1000)
+                .try_with_sql(&sql)
+                .and_then(|mut parser| parser.parse_statements());
+            let _ = tx.send(result.is_ok());
+        });
+
+        let parsed = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("parser should handle this quickly, not loop exponentially");
+        assert!(parsed, "{level} nested 30 deep should parse");
+    }
+}
+
+#[test]
+fn parse_bang_not_renders_apart_from_operand() {
+    let dialects = all_dialects_where(|d| d.supports_bang_not_operator());
+    dialects.verified_stmt("SELECT ! !a");
+    dialects.verified_stmt("SELECT ! ! !a");
+    dialects.verified_stmt("SELECT ! ~ a");
+    dialects.verified_stmt("SELECT ! -a");
+    dialects.verified_stmt("SELECT ! +a");
+    dialects.verified_stmt("SELECT !a");
+    dialects.verified_stmt("SELECT !(b > 3)");
+    dialects.verified_stmt("SELECT ! -a + b");
+    dialects.verified_stmt("SELECT !a + b");
+    dialects.verified_stmt("SELECT !NOT a");
+    dialects.verified_stmt("SET eaac_cion = ! !o");
+    dialects.one_statement_parses_to("SET eaac_cion = ! ! o", "SET eaac_cion = ! !o");
+}
+
+#[test]
+fn parse_position_chain_no_exponential_blowup() {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    let sql = String::from("SELECT ") + &"POSITION(".repeat(24) + "1" + &")".repeat(24);
+
+    let (tx, rx) = mpsc::channel();
+    // 24 levels overflow the default 2 MB test-thread stack in debug builds.
+    thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || {
+            let _ = tx.send(Parser::parse_sql(&GenericDialect {}, &sql).map(|_| ()));
+        })
+        .unwrap();
+
+    let result = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("parser should finish quickly, not loop exponentially");
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn parse_position_forms_with_nested_fallback() {
+    let dialects = all_dialects();
+    assert!(matches!(
+        dialects.verified_expr("POSITION('@' IN field)"),
+        Expr::Position { .. }
+    ));
+    // The inner call takes the `IN` form and the outer one falls back.
+    match dialects.verified_expr("POSITION(POSITION('@' IN field))") {
+        Expr::Function(Function {
+            args: FunctionArguments::List(FunctionArgumentList { args, .. }),
+            ..
+        }) => assert!(matches!(
+            &args[..],
+            [FunctionArg::Unnamed(FunctionArgExpr::Expr(
+                Expr::Position { .. }
+            ))]
+        )),
+        other => panic!("outer POSITION should be an ordinary call, got {other:?}"),
+    }
+    // The outer call takes the `IN` form around an ordinary inner call.
+    assert!(matches!(
+        dialects.verified_expr("POSITION(POSITION(x) IN field)"),
+        Expr::Position { .. }
+    ));
+    dialects.verified_expr("POSITION(POSITION(POSITION(x)), POSITION(y))");
+}
+
+#[test]
+#[cfg(feature = "visitor")]
+fn parse_position_in_connect_by_list_after_state_change() {
+    // The list is first tried as a subquery in `CONNECT BY` state, where
+    // `PRIOR` is an operator, then reparsed as expressions, where it is a name.
+    let sql = "SELECT * FROM t CONNECT BY x IN (((SELECT POSITION(PRIOR IN (z)))), 1)";
+    for dialect in all_dialects().dialects {
+        let stmts = Parser::parse_sql(dialect.as_ref(), sql).unwrap();
+        let mut positions = 0;
+        let _ = sqlparser::ast::visit_expressions(&stmts, |expr| {
+            if matches!(expr, Expr::Position { .. }) {
+                positions += 1;
+            }
+            core::ops::ControlFlow::<()>::Continue(())
+        });
+        assert_eq!(positions, 1, "{dialect:?}");
+    }
+}
+
+#[test]
+fn parse_array_suffix_after_nested_type() {
+    // When `>>` closes two types at once, a following array suffix belongs to the outer one.
+    let dialects = all_dialects_where(|d| {
+        d.supports_struct_literal() && d.supports_array_typedef_with_brackets()
+    });
+    dialects.verified_stmt("SELECT CAST(NULL AS STRUCT<a STRUCT<b INT>>[])");
+    dialects.verified_stmt("SELECT CAST(NULL AS STRUCT<a STRUCT<b INT>[]>)");
+    dialects.verified_stmt("SELECT CAST(NULL AS STRUCT<a STRUCT<b STRUCT<c INT>>>[])");
+    dialects.verified_stmt("SELECT CAST(NULL AS STRUCT<a STRUCT<b INT>>[][2])");
+    dialects.verified_stmt("SELECT CAST(NULL AS ARRAY<ARRAY<INT>>[])");
+    dialects.verified_stmt("SELECT CAST(NULL AS ARRAY<STRUCT<a INT>>[])");
+    assert_eq!(
+        dialects.parse_sql_statements("SELECT CAST(NULL AS STRUCT<a STRUCT<b INT>>[)"),
+        Err(ParserError::ParserError(
+            "Expected: ], found: )".to_string()
+        ))
+    );
+    assert_eq!(
+        dialects.parse_sql_statements("SELECT CAST(NULL AS STRUCT<a STRUCT<b INT>>[x])"),
+        Err(ParserError::ParserError(
+            "Expected: ], found: x".to_string()
+        ))
+    );
+
+    let dialects = all_dialects_where(|d| d.supports_struct_literal());
+    dialects.verified_stmt("SELECT CAST(NULL AS STRUCT<a STRUCT<b INT>> ARRAY)");
+    dialects.verified_stmt("SELECT CAST(NULL AS STRUCT<a STRUCT<b INT>> ARRAY[2])");
+    dialects.verified_stmt("SELECT CAST(NULL AS ARRAY<STRUCT<a INT>> ARRAY)");
+
+    all_dialects_where(|d| {
+        d.supports_struct_literal() && d.supports_map_literal_with_angle_brackets()
+    })
+    .verified_stmt("SELECT CAST(NULL AS MAP<INT, STRUCT<a INT>> ARRAY)");
+}
+
+#[test]
+fn parse_cte_materialization() {
+    for (directive, expected) in [
+        ("", None),
+        ("MATERIALIZED ", Some(CteAsMaterialized::Materialized)),
+        (
+            "NOT MATERIALIZED ",
+            Some(CteAsMaterialized::NotMaterialized),
+        ),
+    ] {
+        let sql = format!("WITH c AS {directive}(SELECT 1) SELECT * FROM c");
+        TestedDialects::new(vec![Box::new(DuckDbDialect {})]).verified_query(&sql);
+        let query = all_dialects_where(|d| d.supports_cte_materialization()).verified_query(&sql);
+        assert_eq!(query.with.unwrap().cte_tables[0].materialized, expected);
+        if expected.is_some() {
+            all_dialects_where(|d| !d.supports_cte_materialization())
+                .parse_sql_statements(&sql)
+                .unwrap_err();
+        }
+    }
+}
+
+#[test]
+fn unary_prefix_operator_renders_apart_from_cast_operand() {
+    for (op, expected) in [
+        (UnaryOperator::Minus, "- -x::INT"),
+        (UnaryOperator::BangNot, "! !x::INT"),
+    ] {
+        let cast = Expr::Cast {
+            kind: CastKind::DoubleColon,
+            expr: Box::new(UnaryOp {
+                op,
+                expr: Box::new(Identifier(Ident::new("x"))),
+            }),
+            data_type: DataType::Int(None),
+            format: None,
+        };
+        let expr = UnaryOp {
+            op,
+            expr: Box::new(cast),
+        };
+        assert_eq!(expr.to_string(), expected);
+    }
+}
+
+#[test]
+fn parse_string_literal_alias() {
+    for (sql, canonical, table, explicit, error) in [
+        (
+            "SELECT 1 AS 'x'",
+            "SELECT 1 AS 'x'",
+            false,
+            true,
+            "Expected: an identifier after AS, found: 'x'",
+        ),
+        (
+            "SELECT 1 'x'",
+            "SELECT 1 AS 'x'",
+            false,
+            false,
+            "Expected: end of statement, found: 'x'",
+        ),
+        (
+            "SELECT a FROM t AS 'y'",
+            "SELECT a FROM t AS 'y'",
+            true,
+            true,
+            "Expected: an identifier after AS, found: 'y'",
+        ),
+        (
+            "SELECT a FROM t 'y'",
+            "SELECT a FROM t 'y'",
+            true,
+            false,
+            "Expected: end of statement, found: 'y'",
+        ),
+    ] {
+        let supported = |d: &dyn Dialect| {
+            if table {
+                d.supports_string_literal_table_alias(explicit)
+            } else {
+                d.supports_string_literal_column_alias(explicit)
+            }
+        };
+        all_dialects_where(supported).one_statement_parses_to(sql, canonical);
+        assert_eq!(
+            all_dialects_where(|d| !supported(d)).parse_sql_statements(sql),
+            Err(ParserError::ParserError(error.to_string())),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn parse_string_literal_alias_per_engine() {
+    let forms = [
+        "SELECT 1 AS 'x'",
+        "SELECT 1 'x'",
+        "SELECT a FROM t AS 'y'",
+        "SELECT a FROM t 'y'",
+    ];
+    let dialects: [(Box<dyn Dialect>, [bool; 4]); 8] = [
+        (Box::new(PostgreSqlDialect {}), [false, false, false, false]),
+        (Box::new(SQLiteDialect {}), [true, true, true, true]),
+        (Box::new(DuckDbDialect {}), [true, false, true, false]),
+        (Box::new(MySqlDialect {}), [true, true, false, false]),
+        (
+            Box::new(sqlparser::dialect::SparkSqlDialect {}),
+            [false, false, false, false],
+        ),
+        (Box::new(DatabricksDialect {}), [false, false, false, false]),
+        (Box::new(HiveDialect {}), [false, false, false, false]),
+        (Box::new(ClickHouseDialect {}), [false, false, false, false]),
+    ];
+    for (dialect, accepted) in dialects {
+        for (sql, accepted) in forms.iter().zip(accepted) {
+            assert_eq!(
+                Parser::parse_sql(dialect.as_ref(), sql).is_ok(),
+                accepted,
+                "{dialect:?}: {sql}"
+            );
+        }
+    }
+}
+
+#[test]
+fn display_nested_unary_minus_in_linear_time() {
+    use core::time::Duration;
+    use std::sync::mpsc;
+    use std::thread;
+
+    let depth = 200;
+    let sql = format!("SELECT {}-x", "- ".repeat(depth - 1));
+    let statement = Parser::new(&GenericDialect {})
+        .with_recursion_limit(depth * 10)
+        .try_with_sql(&sql)
+        .and_then(|mut p| p.parse_statement())
+        .unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(statement.to_string());
+    });
+
+    let printed = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("display should not take exponential time");
+    assert_eq!(printed, sql);
+}
+
+#[test]
+fn parse_window_spec_keyword_base_window_name() {
+    let dialects = all_dialects();
+    for name in ["w", "id", "part"] {
+        let sql = format!("SELECT count(*) OVER ({name} ORDER BY a) FROM t");
+        let select = dialects.verified_only_select(&sql);
+        match expr_from_projection(&select.projection[0]) {
+            Expr::Function(Function {
+                over: Some(WindowType::WindowSpec(spec)),
+                ..
+            }) => assert_eq!(spec.window_name, Some(Ident::new(name)), "{sql}"),
+            other => panic!("{sql}: unexpected {other:?}"),
+        }
+    }
+    dialects.verified_stmt("SELECT count(*) OVER (ORDER BY a) FROM t");
+    dialects.verified_stmt("SELECT count(*) OVER (PARTITION BY a) FROM t");
+    dialects.verified_stmt(
+        "SELECT count(*) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
+    );
+}
+
+#[test]
+fn parse_qualified_column_named_like_a_literal_prefix() {
+    let dialects = all_dialects_where(|d| d.supports_literal_prefix_in_qualified_name());
+    for (prefix, value) in [
+        ("x", "ff"),
+        ("X", "ff"),
+        ("b", "01"),
+        ("B", "01"),
+        ("n", "nat"),
+        ("N", "nat"),
+        ("r", "raw"),
+        ("R", "raw"),
+        ("e", "es"),
+        ("E", "es"),
+    ] {
+        dialects.one_statement_parses_to(
+            &format!("SELECT t.{prefix}'{value}' FROM t"),
+            &format!("SELECT t.{prefix} AS '{value}' FROM t"),
+        );
+    }
+    dialects.one_statement_parses_to("SELECT t.u&'uni' FROM t", "SELECT t.u & 'uni' FROM t");
+}
+
+#[test]
+fn tokenize_qualified_literal_prefix_without_capability() {
+    all_dialects_where(|d| !d.supports_literal_prefix_in_qualified_name()).tokenizes_to(
+        "t.x'ff'",
+        vec![
+            Token::make_word("t", None),
+            Token::Period,
+            Token::HexStringLiteral("ff".to_string()),
+        ],
+    );
+}
+
+#[test]
+fn parse_qualified_literal_prefix_requires_adjacent_period() {
+    let dialects = all_dialects_where(|d| d.supports_literal_prefix_in_qualified_name());
+    for sql in [
+        "SELECT t. x'ff' FROM t",
+        "SELECT t./* comment */x'ff' FROM t",
+    ] {
+        assert_eq!(
+            dialects.parse_sql_statements(sql),
+            Err(ParserError::ParserError(
+                "Expected: an identifier or a '*' after '.', found: X'ff'".to_string()
+            )),
+            "{sql}"
+        );
+    }
+    for (sql, token) in [
+        ("x'ff'", Token::HexStringLiteral("ff".to_string())),
+        (
+            "b'01'",
+            Token::SingleQuotedByteStringLiteral("01".to_string()),
+        ),
+        ("n'nat'", Token::NationalStringLiteral("nat".to_string())),
+    ] {
+        dialects.tokenizes_to(sql, vec![token]);
     }
 }

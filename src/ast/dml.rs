@@ -37,6 +37,29 @@ use super::{
     Values,
 };
 
+/// The `OVERRIDING` clause of a PostgreSQL `INSERT`: whether values supplied for an identity
+/// column are used instead of the values its sequence would generate.
+///
+/// See <https://www.postgresql.org/docs/current/sql-insert.html>
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "visitor", derive(Visit, VisitMut))]
+pub enum InsertOverriding {
+    /// `OVERRIDING SYSTEM VALUE`
+    System,
+    /// `OVERRIDING USER VALUE`
+    User,
+}
+
+impl Display for InsertOverriding {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            InsertOverriding::System => write!(f, "OVERRIDING SYSTEM VALUE"),
+            InsertOverriding::User => write!(f, "OVERRIDING USER VALUE"),
+        }
+    }
+}
+
 /// INSERT statement.
 #[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -95,6 +118,10 @@ pub struct Insert {
     pub label: Option<Ident>,
     /// Columns defined after PARTITION
     pub after_columns: Vec<Ident>,
+    /// PostgreSQL `OVERRIDING { SYSTEM | USER } VALUE`, between the column list and the source.
+    ///
+    /// See <https://www.postgresql.org/docs/current/sql-insert.html>
+    pub overriding: Option<InsertOverriding>,
     /// whether the insert has the table keyword (Hive)
     pub has_table_keyword: bool,
     /// ON INSERT
@@ -297,6 +324,11 @@ impl Display for Insert {
             SpaceOrNewline.fmt(f)?;
         }
 
+        if let Some(overriding) = &self.overriding {
+            write!(f, "{overriding}")?;
+            SpaceOrNewline.fmt(f)?;
+        }
+
         if let Some(output) = &self.output {
             write!(f, "{output}")?;
             SpaceOrNewline.fmt(f)?;
@@ -403,6 +435,8 @@ pub struct Delete {
     pub tables: Vec<ObjectName>,
     /// FROM
     pub from: FromTable,
+    /// ClickHouse `ON CLUSTER`
+    pub on_cluster: Option<Ident>,
     /// USING (Snowflake, Postgres, MySQL)
     pub using: Option<Vec<TableWithJoins>>,
     /// WHERE
@@ -416,6 +450,8 @@ pub struct Delete {
     pub order_by: Vec<OrderByExpr>,
     /// LIMIT (MySQL)
     pub limit: Option<Expr>,
+    /// ClickHouse `SETTINGS`
+    pub settings: Option<Vec<Setting>>,
 }
 
 impl Display for Delete {
@@ -436,6 +472,9 @@ impl Display for Delete {
             FromTable::WithoutKeyword(from) => {
                 indented_list(f, from)?;
             }
+        }
+        if let Some(on_cluster) = &self.on_cluster {
+            write!(f, " ON CLUSTER {on_cluster}")?;
         }
         if let Some(output) = &self.output {
             SpaceOrNewline.fmt(f)?;
@@ -468,6 +507,11 @@ impl Display for Delete {
             SpaceOrNewline.fmt(f)?;
             Indent(limit).fmt(f)?;
         }
+        if let Some(settings) = &self.settings {
+            SpaceOrNewline.fmt(f)?;
+            f.write_str("SETTINGS")?;
+            indented_list(f, settings)?;
+        }
         Ok(())
     }
 }
@@ -486,6 +530,8 @@ pub struct Update {
     pub optimizer_hints: Vec<OptimizerHint>,
     /// TABLE
     pub table: TableWithJoins,
+    /// ClickHouse `ON CLUSTER`
+    pub on_cluster: Option<Ident>,
     /// Column assignments
     pub assignments: Vec<Assignment>,
     /// Table which provide value to be set
@@ -504,6 +550,8 @@ pub struct Update {
     pub order_by: Vec<OrderByExpr>,
     /// LIMIT
     pub limit: Option<Expr>,
+    /// ClickHouse `SETTINGS`
+    pub settings: Option<Vec<Setting>>,
 }
 
 impl Display for Update {
@@ -519,6 +567,9 @@ impl Display for Update {
             f.write_str(" ")?;
         }
         self.table.fmt(f)?;
+        if let Some(on_cluster) = &self.on_cluster {
+            write!(f, " ON CLUSTER {on_cluster}")?;
+        }
         if let Some(UpdateTableFromKind::BeforeSet(from)) = &self.from {
             SpaceOrNewline.fmt(f)?;
             f.write_str("FROM")?;
@@ -557,6 +608,11 @@ impl Display for Update {
         if let Some(limit) = &self.limit {
             SpaceOrNewline.fmt(f)?;
             write!(f, "LIMIT {limit}")?;
+        }
+        if let Some(settings) = &self.settings {
+            SpaceOrNewline.fmt(f)?;
+            f.write_str("SETTINGS")?;
+            indented_list(f, settings)?;
         }
         Ok(())
     }
@@ -720,6 +776,13 @@ pub enum MergeAction {
         /// The `DELETE` token that starts the sub-expression.
         delete_token: AttachedToken,
     },
+    /// A `DO NOTHING` clause.
+    DoNothing {
+        /// The `DO` token that starts the sub-expression.
+        do_token: AttachedToken,
+        /// The `NOTHING` token that ends the sub-expression.
+        nothing_token: AttachedToken,
+    },
 }
 
 impl Display for MergeAction {
@@ -733,6 +796,9 @@ impl Display for MergeAction {
             }
             MergeAction::Delete { .. } => {
                 write!(f, "DELETE")
+            }
+            MergeAction::DoNothing { .. } => {
+                write!(f, "DO NOTHING")
             }
         }
     }

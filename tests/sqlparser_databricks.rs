@@ -56,6 +56,19 @@ fn test_databricks_identifiers() {
 }
 
 #[test]
+fn parse_non_reserved_keyword_table_names() {
+    for name in ["limit", "where", "on", "into", "having"] {
+        let sql = format!("SELECT * FROM {name}");
+        let select = databricks().verified_only_select(&sql);
+        assert_eq!(select.from[0].relation, table(name));
+
+        let sql = format!("SELECT * FROM t JOIN {name} ON true");
+        let select = databricks().verified_only_select(&sql);
+        assert_eq!(select.from[0].joins[0].relation, table(name));
+    }
+}
+
+#[test]
 fn test_databricks_exists() {
     // exists is a function in databricks
     assert_eq!(
@@ -453,13 +466,20 @@ fn parse_table_time_travel() {
     all_dialects_where(|d| d.supports_table_versioning())
         .verified_only_select("SELECT 1 FROM t1 VERSION AS OF 1");
 
-    assert!(databricks()
-        .parse_sql_statements("SELECT 1 FROM t1 FOR TIMESTAMP AS OF 'some_timestamp'")
-        .is_err());
+    assert_eq!(
+        databricks().parse_sql_statements("SELECT 1 FROM t1 FOR TIMESTAMP AS OF 'some_timestamp'"),
+        Err(ParserError::ParserError(
+            "Expected: one of UPDATE or SHARE, found: TIMESTAMP".to_string()
+        ))
+    );
 
-    assert!(all_dialects_where(|d| d.supports_table_versioning())
-        .parse_sql_statements("SELECT 1 FROM t1 VERSION AS OF 1 - 2",)
-        .is_err())
+    assert_eq!(
+        all_dialects_where(|d| d.supports_table_versioning())
+            .parse_sql_statements("SELECT 1 FROM t1 VERSION AS OF 1 - 2"),
+        Err(ParserError::ParserError(
+            "Expected: end of statement, found: -".to_string()
+        ))
+    );
 }
 
 #[test]
@@ -733,9 +753,13 @@ fn parse_cte_without_as() {
     databricks_and_generic()
         .verified_query("WITH cte (col1, col2) AS (SELECT 1, 2) SELECT * FROM cte");
 
-    assert!(all_dialects_where(|d| !d.supports_cte_without_as())
-        .parse_sql_statements("WITH cte (SELECT 1) SELECT * FROM cte")
-        .is_err());
+    assert_eq!(
+        all_dialects_where(|d| !d.supports_cte_without_as())
+            .parse_sql_statements("WITH cte (SELECT 1) SELECT * FROM cte"),
+        Err(ParserError::ParserError(
+            "Expected: ), found: 1".to_string()
+        ))
+    );
 }
 
 #[test]
@@ -743,6 +767,34 @@ fn test_databricks_insert_by_name() {
     databricks_and_generic().verified_stmt("INSERT INTO target BY NAME SELECT 1 AS a");
     databricks_and_generic().verified_stmt(
         "INSERT INTO TABLE lakehouse.dwd.dwd_event_quality_sla_metric_di BY NAME WITH day AS (SELECT 1 AS event_data_id) SELECT event_data_id FROM day",
+    );
+}
+
+#[test]
+fn parse_databricks_query_entry_points() {
+    databricks().verified_stmt("CREATE TABLE t (attrs MAP<STRING, ARRAY<INT>>)");
+    databricks().one_statement_parses_to(r#"SELECT 'it\'s'"#, "SELECT 'it''s'");
+    databricks().verified_stmt("SELECT * REPLACE (upper(name) AS name) FROM source");
+    databricks().verified_stmt(
+        "CREATE VIEW cross_product AS FROM main.raw.left_table, main.raw.right_table",
+    );
+    databricks()
+        .verified_stmt("CREATE VIEW filtered AS FROM main.raw.source |> WHERE id > 0 |> SELECT id");
+}
+
+#[test]
+fn parse_databricks_collated_data_types() {
+    databricks().verified_stmt(
+        "CREATE TABLE t (name STRING COLLATE UTF8_BINARY, values ARRAY<STRING COLLATE UTF8_LCASE>, attrs MAP<STRING COLLATE UTF8_BINARY, STRING COLLATE UTF8_LCASE>)",
+    );
+    databricks().verified_stmt("CREATE TABLE t (s STRUCT<a STRING COLLATE UTF8_LCASE>)");
+    databricks().verified_stmt("CREATE TABLE t (c ARRAY<ARRAY<STRING>> COLLATE UTF8_LCASE)");
+    assert_eq!(
+        TestedDialects::new(vec![Box::new(GenericDialect {})])
+            .parse_sql_statements("CREATE TABLE t (c ARRAY<STRING COLLATE UTF8_LCASE>)"),
+        Err(ParserError::ParserError(
+            "Expected: >, found: COLLATE".to_string()
+        ))
     );
 }
 
@@ -804,11 +856,10 @@ fn parse_insert_replace_where() {
         _ => unreachable!(),
     }
 
-    assert!(Parser::parse_sql(
+    assert_eq!(Parser::parse_sql(
         &SparkSqlDialect {},
         "INSERT INTO sales REPLACE WHERE tx_date BETWEEN '2022-10-01' AND '2022-10-31' SELECT 1, 2"
-    )
-    .is_err());
+    ), Err(ParserError::ParserError("Expected: SELECT, VALUES, or a subquery in the query body, found: REPLACE at Line: 1, Column: 19".to_string())));
 }
 
 #[test]
@@ -934,7 +985,7 @@ fn parse_declare_session_variable() {
     databricks().verified_stmt("DECLARE process_start_at = 1");
 
     match databricks().verified_stmt("DECLARE OR REPLACE VARIABLE process_start_at TIMESTAMP") {
-        Statement::Declare { mut stmts } => {
+        Statement::Declare { mut stmts, .. } => {
             assert_eq!(1, stmts.len());
             let stmt = stmts.swap_remove(0);
             assert!(stmt.or_replace);
@@ -953,7 +1004,7 @@ fn parse_declare_session_variable() {
     }
 
     match databricks().verified_stmt("DECLARE VAR process_start_at TIMESTAMP = 1") {
-        Statement::Declare { mut stmts } => {
+        Statement::Declare { mut stmts, .. } => {
             let stmt = stmts.swap_remove(0);
             assert!(!stmt.or_replace);
             assert_eq!(Some(SessionVariableKeyword::Var), stmt.variable_keyword);
@@ -1242,11 +1293,15 @@ fn parse_copy_into_errors() {
     );
 
     // Only dialects with `supports_copy_into_fileformat` accept the syntax
-    assert!(Parser::parse_sql(
-        &GenericDialect {},
-        "COPY INTO t FROM 's3://b/' FILEFORMAT = CSV"
-    )
-    .is_err());
+    assert_eq!(
+        Parser::parse_sql(
+            &GenericDialect {},
+            "COPY INTO t FROM 's3://b/' FILEFORMAT = CSV"
+        ),
+        Err(ParserError::ParserError(
+            "Expected: FROM or TO, found: t at Line: 1, Column: 11".to_string()
+        ))
+    );
 }
 
 #[test]
@@ -1356,22 +1411,24 @@ fn parse_insert_overwrite_directory_using() {
         ParserError::ParserError("Expected: identifier, found: )".to_string())
     );
     // `OPTIONS` is only valid in combination with `USING`.
-    assert!(databricks()
+    assert_eq!(databricks()
         .parse_sql_statements(
             "INSERT OVERWRITE DIRECTORY '/tmp/destination' STORED AS TEXTFILE OPTIONS (col1 = 1) SELECT 1"
-        )
-        .is_err());
+        ), Err(ParserError::ParserError("Expected: SELECT, VALUES, or a subquery in the query body, found: OPTIONS".to_string())));
 
     // Dialects without `supports_insert_overwrite_directory_using` require a
     // path and do not accept `USING`/`OPTIONS`.
-    assert!(Parser::parse_sql(
+    assert_eq!(Parser::parse_sql(
         &HiveDialect {},
         "INSERT OVERWRITE DIRECTORY '/tmp/destination' USING parquet SELECT 1"
-    )
-    .is_err());
-    assert!(Parser::parse_sql(
-        &HiveDialect {},
-        "INSERT OVERWRITE DIRECTORY USING parquet SELECT 1"
-    )
-    .is_err());
+    ), Err(ParserError::ParserError("Expected: SELECT, VALUES, or a subquery in the query body, found: USING at Line: 1, Column: 47".to_string())));
+    assert_eq!(
+        Parser::parse_sql(
+            &HiveDialect {},
+            "INSERT OVERWRITE DIRECTORY USING parquet SELECT 1"
+        ),
+        Err(ParserError::ParserError(
+            "Expected: literal string, found: USING at Line: 1, Column: 28".to_string()
+        ))
+    );
 }

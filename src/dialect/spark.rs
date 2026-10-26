@@ -36,6 +36,22 @@ impl Dialect for SparkSqlDialect {
         matches!(ch, '`')
     }
 
+    /// Aliases are identifiers, see `named_expression` in
+    /// <https://spark.apache.org/docs/latest/sql-ref-syntax-qry-select.html> and
+    /// <https://spark.apache.org/docs/latest/sql-ref-identifier.html>
+    fn supports_string_literal_column_alias(&self, _explicit: bool) -> bool {
+        false
+    }
+
+    /// Aliases are identifiers, see <https://spark.apache.org/docs/latest/sql-ref-identifier.html>
+    fn supports_string_literal_table_alias(&self, _explicit: bool) -> bool {
+        false
+    }
+
+    fn supports_comparison_in_between_low_bound(&self) -> bool {
+        true
+    }
+
     /// See <https://spark.apache.org/docs/latest/sql-ref-identifier.html>
     fn identifier_quote_style(&self, _identifier: &str) -> Option<char> {
         Some('`')
@@ -161,11 +177,11 @@ impl Dialect for SparkSqlDialect {
         &self,
         parser: &mut Parser,
         expr: &Expr,
-        _precedence: u8,
+        precedence: u8,
     ) -> Option<Result<Expr, ParserError>> {
         if parser.parse_keyword(Keyword::DIV) {
             let left = Box::new(expr.clone());
-            let right = Box::new(match parser.parse_expr() {
+            let right = Box::new(match parser.parse_subexpr(precedence) {
                 Ok(expr) => expr,
                 Err(e) => return Some(Err(e)),
             });

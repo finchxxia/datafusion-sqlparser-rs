@@ -21,7 +21,7 @@ use crate::ast::{
     GranteesType, IfStatement, Statement,
 };
 use crate::dialect::Dialect;
-use crate::keywords::Keyword;
+use crate::keywords::{Keyword, RESERVED_FOR_TABLE_FACTOR};
 use crate::parser::{Parser, ParserError};
 use crate::tokenizer::Token;
 #[cfg(not(feature = "std"))]
@@ -68,6 +68,10 @@ impl Dialect for MsSqlDialect {
     /// SQL Server supports `$` as a prefix for money literals
     /// <https://learn.microsoft.com/en-us/sql/t-sql/data-types/constants-transact-sql?view=sql-server-ver17#money-constants>
     fn supports_dollar_as_money_prefix(&self) -> bool {
+        true
+    }
+
+    fn supports_create_proc_syntax(&self) -> bool {
         true
     }
 
@@ -165,6 +169,12 @@ impl Dialect for MsSqlDialect {
             | Keyword::MERGE => false,
             _ => explicit || self.is_column_alias(kw, parser),
         }
+    }
+
+    /// LIMIT is not a reserved word in Transact-SQL.
+    /// See <https://learn.microsoft.com/en-us/sql/t-sql/language-elements/reserved-keywords-transact-sql>
+    fn is_table_factor(&self, kw: &Keyword, _parser: &mut Parser) -> bool {
+        kw == &Keyword::LIMIT || !RESERVED_FOR_TABLE_FACTOR.contains(kw)
     }
 
     fn is_table_factor_alias(&self, explicit: bool, kw: &Keyword, parser: &mut Parser) -> bool {

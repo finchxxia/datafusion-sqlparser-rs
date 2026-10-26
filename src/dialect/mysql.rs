@@ -20,9 +20,10 @@ use alloc::boxed::Box;
 
 use crate::{
     ast::{BinaryOperator, Expr, LockTable, LockTableType, Statement},
-    dialect::Dialect,
+    dialect::{BindPlaceholderStyle, Dialect, Precedence},
     keywords::Keyword,
     parser::{Parser, ParserError},
+    tokenizer::Token,
 };
 
 use super::keywords;
@@ -40,6 +41,12 @@ const RESERVED_FOR_TABLE_ALIAS_MYSQL: &[Keyword] = &[
 pub struct MySqlDialect {}
 
 impl Dialect for MySqlDialect {
+    /// Only select-list aliases may use string quoting, see
+    /// <https://dev.mysql.com/doc/refman/8.4/en/problems-with-alias.html>
+    fn supports_string_literal_table_alias(&self, _explicit: bool) -> bool {
+        false
+    }
+
     fn is_identifier_start(&self, ch: char) -> bool {
         // See https://dev.mysql.com/doc/refman/8.0/en/identifiers.html.
         // Identifiers which begin with a digit are recognized while tokenizing numbers,
@@ -67,6 +74,10 @@ impl Dialect for MySqlDialect {
         Some('`')
     }
 
+    fn ordered_bind_placeholder_style(&self) -> Option<BindPlaceholderStyle> {
+        Some(BindPlaceholderStyle::QuestionMark)
+    }
+
     // See https://dev.mysql.com/doc/refman/8.0/en/string-literals.html#character-escape-sequences
     fn supports_string_literal_backslash_escape(&self) -> bool {
         true
@@ -85,7 +96,15 @@ impl Dialect for MySqlDialect {
         true
     }
 
+    fn supports_literal_prefix_in_qualified_name(&self) -> bool {
+        true
+    }
+
     fn supports_bitwise_shift_operators(&self) -> bool {
+        true
+    }
+
+    fn supports_singular_value_keyword(&self) -> bool {
         true
     }
 
@@ -98,12 +117,12 @@ impl Dialect for MySqlDialect {
         &self,
         parser: &mut crate::parser::Parser,
         expr: &crate::ast::Expr,
-        _precedence: u8,
+        precedence: u8,
     ) -> Option<Result<crate::ast::Expr, ParserError>> {
         // Parse DIV as an operator
         if parser.parse_keyword(Keyword::DIV) {
             let left = Box::new(expr.clone());
-            let right = Box::new(match parser.parse_expr() {
+            let right = Box::new(match parser.parse_subexpr(precedence) {
                 Ok(expr) => expr,
                 Err(e) => return Some(Err(e)),
             });
@@ -167,6 +186,10 @@ impl Dialect for MySqlDialect {
         true
     }
 
+    fn supports_hash_comment(&self) -> bool {
+        true
+    }
+
     fn supports_match_against(&self) -> bool {
         true
     }
@@ -183,12 +206,21 @@ impl Dialect for MySqlDialect {
         true
     }
 
+    /// See: <https://dev.mysql.com/doc/refman/8.4/en/alter-table.html>
+    fn supports_alter_column_position(&self) -> bool {
+        true
+    }
+
     /// See: <https://dev.mysql.com/doc/refman/8.4/en/update.html>
     fn supports_update_order_by(&self) -> bool {
         true
     }
 
     fn supports_data_type_signed_suffix(&self) -> bool {
+        true
+    }
+
+    fn supports_data_type_zerofill_suffix(&self) -> bool {
         true
     }
 
@@ -201,9 +233,23 @@ impl Dialect for MySqlDialect {
         true
     }
 
+    /// `&&` binds like `AND`.
+    /// See: <https://dev.mysql.com/doc/refman/8.4/en/operator-precedence.html>
+    fn get_next_precedence(&self, parser: &Parser) -> Option<Result<u8, ParserError>> {
+        match parser.peek_token_ref().token {
+            Token::Overlap => Some(Ok(self.prec_value(Precedence::And))),
+            _ => None,
+        }
+    }
+
     /// Deprecated functionality by MySQL but still supported
     /// See: <https://dev.mysql.com/doc/refman/8.4/en/cast-functions.html#operator_binary>
     fn supports_binary_kw_as_cast(&self) -> bool {
+        true
+    }
+
+    /// See: <https://dev.mysql.com/doc/refman/8.4/en/partitioning-selection.html>
+    fn supports_table_partitions(&self) -> bool {
         true
     }
 

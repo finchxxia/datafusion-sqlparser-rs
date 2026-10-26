@@ -753,7 +753,7 @@ fn test_duckdb_union_datatype() {
             file_format: Default::default(),
             location: Default::default(),
             query: Default::default(),
-            without_rowid: Default::default(),
+            sqlite_table_options: Default::default(),
             like: Default::default(),
             clone: Default::default(),
             comment: Default::default(),
@@ -768,7 +768,6 @@ fn test_duckdb_union_datatype() {
             inherits: Default::default(),
             partition_of: Default::default(),
             for_values: Default::default(),
-            strict: Default::default(),
             copy_grants: Default::default(),
             enable_schema_evolution: Default::default(),
             change_tracking: Default::default(),
@@ -903,6 +902,21 @@ fn test_duckdb_lambda_function() {
     let sql_arrow = "SELECT list_filter([1, 2, 3], x -> x > 1)";
     duckdb().verified_stmt(sql_arrow);
 
+    // Both readings of `->` print identically, so round-tripping cannot tell
+    // a lambda from JSON member access. Assert the shape instead.
+    let select = duckdb().verified_only_select(sql_arrow);
+    let Expr::Function(func) = expr_from_projection(only(&select.projection)) else {
+        panic!("expected a function call");
+    };
+    let FunctionArguments::List(args) = &func.args else {
+        panic!("expected an argument list");
+    };
+    let [_, FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Lambda(lambda)))] = &args.args[..]
+    else {
+        panic!("expected the second argument to be a lambda");
+    };
+    assert_eq!(LambdaSyntax::Arrow, lambda.syntax);
+
     // Test lambda with multiple parameters (with index)
     let sql_multi = "SELECT list_filter([1, 3, 1, 5], lambda x, i : x > i)";
     duckdb().verified_stmt(sql_multi);
@@ -910,4 +924,56 @@ fn test_duckdb_lambda_function() {
     // Test lambda in list_transform
     let sql_transform = "SELECT list_transform([1, 2, 3], lambda x : x * 2)";
     duckdb().verified_stmt(sql_transform);
+}
+
+#[test]
+fn test_duckdb_nested_block_comments() {
+    duckdb().one_statement_parses_to(
+        "SELECT a /* outer /* inner */ still comment */ FROM t",
+        "SELECT a FROM t",
+    );
+
+    assert_eq!(
+        duckdb().parse_sql_statements("SELECT a /* outer /* inner */ FROM t"),
+        Err(ParserError::TokenizerError(
+            "Unexpected EOF while in a multi-line comment at Line: 1, Column: 37".to_string()
+        ))
+    );
+}
+
+#[test]
+fn parse_create_macro_without_arguments() {
+    duckdb_and_generic().verified_stmt("CREATE MACRO four() AS 4");
+    duckdb_and_generic()
+        .verified_stmt("CREATE OR REPLACE TEMPORARY MACRO nothing() AS TABLE SELECT 1");
+    duckdb().one_statement_parses_to("CREATE FUNCTION add() AS 1", "CREATE MACRO add() AS 1");
+}
+
+#[test]
+fn display_create_macro_propagates_argument_list_errors() {
+    use core::fmt::{self, Write};
+
+    struct RejectingWriter(char);
+
+    impl Write for RejectingWriter {
+        fn write_str(&mut self, value: &str) -> fmt::Result {
+            if value.contains(self.0) {
+                Err(fmt::Error)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    for sql in [
+        "CREATE MACRO four() AS 4",
+        "CREATE MACRO add(a, b) AS a + b",
+        "CREATE MACRO nothing() AS TABLE SELECT 1",
+    ] {
+        let statement = duckdb_and_generic().verified_stmt(sql);
+        for rejected in ['(', ')'] {
+            let mut writer = RejectingWriter(rejected);
+            assert_eq!(write!(writer, "{statement}"), Err(fmt::Error));
+        }
+    }
 }

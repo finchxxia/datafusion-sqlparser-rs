@@ -16,6 +16,8 @@
 // under the License.
 
 use crate::dialect::Dialect;
+use crate::keywords::Keyword;
+use crate::parser::Parser;
 
 /// A [`Dialect`] for [ClickHouse](https://clickhouse.com/).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -28,8 +30,27 @@ impl Dialect for ClickHouseDialect {
         ch.is_ascii_lowercase() || ch.is_ascii_uppercase() || ch == '_'
     }
 
+    /// Aliases are identifiers, quoted with `"` or a backtick, see
+    /// <https://clickhouse.com/docs/reference/syntax#identifiers>
+    fn supports_string_literal_column_alias(&self, _explicit: bool) -> bool {
+        false
+    }
+
+    /// See <https://clickhouse.com/docs/reference/syntax#identifiers>
+    fn supports_string_literal_table_alias(&self, _explicit: bool) -> bool {
+        false
+    }
+
     fn is_identifier_part(&self, ch: char) -> bool {
-        self.is_identifier_start(ch) || ch.is_ascii_digit()
+        // Undocumented, but the server accepts `$` in identifiers for MySQL compatibility
+        // since https://github.com/ClickHouse/ClickHouse/pull/14232
+        self.is_identifier_start(ch) || ch.is_ascii_digit() || ch == '$'
+    }
+
+    /// ClickHouse keywords are not reserved, so any of them can be a table name.
+    /// See <https://clickhouse.com/docs/en/sql-reference/syntax>
+    fn is_table_factor(&self, _kw: &Keyword, _parser: &mut Parser) -> bool {
+        true
     }
 
     /// ClickHouse accepts both backticks and double quotes, but its own
@@ -79,6 +100,14 @@ impl Dialect for ClickHouseDialect {
         true
     }
 
+    fn supports_array_typedef_with_parentheses(&self) -> bool {
+        true
+    }
+
+    fn supports_map_typedef_with_parentheses(&self) -> bool {
+        true
+    }
+
     // ClickHouse uses this for some FORMAT expressions in `INSERT` context, e.g. when inserting
     // with FORMAT JSONEachRow a raw JSON key-value expression is valid and expected.
     //
@@ -89,6 +118,11 @@ impl Dialect for ClickHouseDialect {
 
     // See <https://clickhouse.com/docs/sql-reference/operators/in>
     fn supports_in_unparenthesized_expr(&self) -> bool {
+        true
+    }
+
+    // See <https://clickhouse.com/docs/sql-reference/operators/in#distributed-subqueries>
+    fn supports_global_in(&self) -> bool {
         true
     }
 
@@ -119,6 +153,16 @@ impl Dialect for ClickHouseDialect {
     /// Supported since 2020.
     /// See <https://clickhouse.com/docs/whats-new/changelog/2020#backward-incompatible-change-2>
     fn supports_nested_comments(&self) -> bool {
+        true
+    }
+
+    /// See <https://clickhouse.com/docs/sql-reference/syntax#comments>
+    fn supports_hash_comment(&self) -> bool {
+        true
+    }
+
+    /// See <https://github.com/ClickHouse/ClickHouse/blob/master/src/Parsers/Lexer.cpp>
+    fn requires_hash_comment_space(&self) -> bool {
         true
     }
 
@@ -163,6 +207,16 @@ impl Dialect for ClickHouseDialect {
     }
 
     fn supports_comma_separated_trim(&self) -> bool {
+        true
+    }
+
+    /// See <https://clickhouse.com/docs/sql-reference/statements/alter/column>
+    fn supports_alter_column_position(&self) -> bool {
+        true
+    }
+
+    /// See <https://clickhouse.com/docs/sql-reference/data-types/tuple#addressing-tuple-elements>
+    fn supports_tuple_element_access(&self) -> bool {
         true
     }
 }
