@@ -11906,6 +11906,12 @@ impl<'a> Parser<'a> {
                     generated_as,
                     sequence_options,
                 }
+            } else if self.dialect.supports_alter_column_comment()
+                && self.parse_keyword(Keyword::COMMENT)
+            {
+                AlterColumnOperation::Comment {
+                    comment: self.parse_comment_value()?,
+                }
             } else {
                 let message = if is_postgresql {
                     "SET/DROP NOT NULL, SET DEFAULT, SET DATA TYPE, or ADD GENERATED after ALTER COLUMN"

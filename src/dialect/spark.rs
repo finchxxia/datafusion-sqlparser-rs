@@ -93,6 +93,11 @@ impl Dialect for SparkSqlDialect {
         true
     }
 
+    /// See <https://spark.apache.org/docs/latest/sql-ref-syntax-ddl-alter-table.html#alter-or-change-column>
+    fn supports_alter_column_comment(&self) -> bool {
+        true
+    }
+
     /// `LONG` is an alias for `BIGINT` in Spark SQL.
     ///
     /// See <https://spark.apache.org/docs/latest/sql-ref-datatypes.html>

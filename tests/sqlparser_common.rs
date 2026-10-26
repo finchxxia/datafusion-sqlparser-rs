@@ -20201,3 +20201,36 @@ fn parse_date_add_unit_as_identifier_when_unsupported() {
         other => panic!("expected argument list, got {other:?}"),
     }
 }
+
+#[test]
+fn parse_alter_column_comment() {
+    let dialects = all_dialects_where(|d| d.supports_alter_column_comment());
+    let sql = "ALTER TABLE tab ALTER COLUMN c COMMENT 'it''s a comment'";
+    match alter_table_op(dialects.verified_stmt(sql)) {
+        AlterTableOperation::AlterColumn {
+            column_name,
+            op: AlterColumnOperation::Comment { comment },
+        } => {
+            assert_eq!(column_name.value, "c");
+            assert_eq!(comment, "it's a comment");
+        }
+        other => panic!("unexpected operation: {other:?}"),
+    }
+
+    dialects.one_statement_parses_to(
+        "ALTER TABLE a.b.t ALTER c COMMENT '手机绑定状态，1没有绑定'",
+        "ALTER TABLE a.b.t ALTER COLUMN c COMMENT '手机绑定状态，1没有绑定'",
+    );
+
+    assert!(dialects
+        .parse_sql_statements("ALTER TABLE t ALTER COLUMN c COMMENT")
+        .is_err());
+    assert!(dialects
+        .parse_sql_statements("ALTER TABLE t ALTER COLUMN c COMMENT c2")
+        .is_err());
+
+    let unsupported = all_dialects_where(|d| !d.supports_alter_column_comment());
+    for dialect in &unsupported.dialects {
+        assert!(Parser::parse_sql(&**dialect, "ALTER TABLE t ALTER COLUMN c COMMENT 'x'").is_err());
+    }
+}

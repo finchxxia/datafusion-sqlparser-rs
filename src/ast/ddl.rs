@@ -1415,6 +1415,14 @@ pub enum AlterColumnOperation {
         /// Optional sequence options for identity generation.
         sequence_options: Option<Vec<SequenceOptions>>,
     },
+
+    /// `COMMENT '<comment>'`
+    ///
+    /// [Spark](https://spark.apache.org/docs/latest/sql-ref-syntax-ddl-alter-table.html#alter-or-change-column)
+    Comment {
+        /// The new column comment.
+        comment: String,
+    },
 }
 
 impl fmt::Display for AlterColumnOperation {
@@ -1463,6 +1471,9 @@ impl fmt::Display for AlterColumnOperation {
                     write!(f, " )")?;
                 }
                 Ok(())
+            }
+            AlterColumnOperation::Comment { comment } => {
+                write!(f, "COMMENT '{}'", escape_single_quote_string(comment))
             }
         }
     }

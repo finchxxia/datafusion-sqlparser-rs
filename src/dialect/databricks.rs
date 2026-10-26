@@ -128,6 +128,11 @@ impl Dialect for DatabricksDialect {
         true
     }
 
+    /// See <https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-syntax-ddl-alter-table-manage-column>
+    fn supports_alter_column_comment(&self) -> bool {
+        true
+    }
+
     /// See <https://docs.databricks.com/en/sql/language-manual/sql-ref-syntax-ddl-create-table-using.html>
     fn supports_create_table_cluster_by(&self) -> bool {
         true
