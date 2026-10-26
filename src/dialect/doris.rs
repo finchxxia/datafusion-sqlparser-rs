@@ -15,7 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
+#[cfg(not(feature = "std"))]
+use alloc::boxed::Box;
+
+use crate::ast::{BinaryOperator, Expr};
 use crate::dialect::Dialect;
+use crate::keywords::Keyword;
+use crate::parser::{Parser, ParserError};
 
 /// A [`Dialect`] for [Apache Doris](https://doris.apache.org/).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -49,6 +55,34 @@ impl Dialect for DorisDialect {
 
     fn supports_numeric_prefix(&self) -> bool {
         true
+    }
+
+    fn supports_limit_comma(&self) -> bool {
+        true
+    }
+
+    fn supports_group_concat_separator(&self) -> bool {
+        true
+    }
+
+    fn parse_infix(
+        &self,
+        parser: &mut Parser,
+        expr: &Expr,
+        precedence: u8,
+    ) -> Option<Result<Expr, ParserError>> {
+        if !parser.parse_keyword(Keyword::DIV) {
+            return None;
+        }
+        let right = match parser.parse_subexpr(precedence) {
+            Ok(right) => right,
+            Err(e) => return Some(Err(e)),
+        };
+        Some(Ok(Expr::BinaryOp {
+            left: Box::new(expr.clone()),
+            op: BinaryOperator::MyIntegerDivide,
+            right: Box::new(right),
+        }))
     }
 
     fn supports_parenthesized_auto_increment_column_option(&self) -> bool {

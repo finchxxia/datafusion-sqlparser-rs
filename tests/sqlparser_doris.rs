@@ -2430,3 +2430,74 @@ fn parse_doris_broker_load_data_desc_negative() {
         ))
     );
 }
+
+#[test]
+fn parse_doris_group_concat_separator() {
+    doris_and_generic().verified_stmt("SELECT GROUP_CONCAT(a SEPARATOR '|') FROM t");
+    doris_and_generic()
+        .verified_stmt("SELECT GROUP_CONCAT(DISTINCT a ORDER BY a SEPARATOR ',') FROM t");
+
+    let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
+    assert_eq!(
+        ansi.parse_sql_statements("SELECT GROUP_CONCAT(a SEPARATOR '|') FROM t"),
+        Err(ParserError::ParserError(
+            "Expected: ), found: SEPARATOR".to_string()
+        ))
+    );
+    assert_eq!(
+        doris().parse_sql_statements("SELECT GROUP_CONCAT(a SEPARATOR) FROM t"),
+        Err(ParserError::ParserError(
+            "Expected: a value, found: )".to_string()
+        ))
+    );
+}
+
+#[test]
+fn parse_doris_div_operator() {
+    let select = doris().verified_only_select("SELECT 1 + 6 DIV 4");
+    assert_eq!(
+        expr_from_projection(&select.projection[0]),
+        &Expr::BinaryOp {
+            left: Box::new(Expr::value(number("1"))),
+            op: BinaryOperator::Plus,
+            right: Box::new(Expr::BinaryOp {
+                left: Box::new(Expr::value(number("6"))),
+                op: BinaryOperator::MyIntegerDivide,
+                right: Box::new(Expr::value(number("4"))),
+            }),
+        }
+    );
+    doris().verified_stmt("SELECT a DIV b FROM t");
+
+    let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
+    assert_eq!(
+        ansi.parse_sql_statements("SELECT a DIV b FROM t"),
+        Err(ParserError::ParserError(
+            "No infix parser for token Word(Word { value: \"DIV\", quote_style: None, keyword: DIV })"
+                .to_string()
+        ))
+    );
+}
+
+#[test]
+fn parse_doris_limit_comma() {
+    match doris()
+        .verified_query("SELECT * FROM t LIMIT 10, 20")
+        .limit_clause
+    {
+        Some(LimitClause::OffsetCommaLimit { offset, limit }) => {
+            assert_eq!(offset, Expr::value(number("10")));
+            assert_eq!(limit, Expr::value(number("20")));
+        }
+        other => panic!("expected LIMIT <offset>, <limit>, got {other:?}"),
+    }
+    doris().verified_stmt("SELECT * FROM t LIMIT 20 OFFSET 10");
+
+    let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
+    assert_eq!(
+        ansi.parse_sql_statements("SELECT * FROM t LIMIT 10, 20"),
+        Err(ParserError::ParserError(
+            "Expected: end of statement, found: ,".to_string()
+        ))
+    );
+}

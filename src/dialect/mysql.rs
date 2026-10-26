@@ -158,6 +158,10 @@ impl Dialect for MySqlDialect {
         true
     }
 
+    fn supports_group_concat_separator(&self) -> bool {
+        true
+    }
+
     /// See: <https://dev.mysql.com/doc/refman/8.4/en/create-table-select.html>
     fn supports_create_table_select(&self) -> bool {
         true

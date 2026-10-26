@@ -157,6 +157,10 @@ impl Dialect for GenericDialect {
         true
     }
 
+    fn supports_group_concat_separator(&self) -> bool {
+        true
+    }
+
     fn supports_update_order_by(&self) -> bool {
         true
     }

@@ -744,6 +744,20 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if the dialect supports a `SEPARATOR <string>` clause at the
+    /// end of an aggregate function call's arguments.
+    ///
+    /// Example:
+    /// ```sql
+    /// SELECT GROUP_CONCAT(a ORDER BY a SEPARATOR '|') FROM t
+    /// ```
+    ///
+    /// [MySQL](https://dev.mysql.com/doc/refman/8.4/en/aggregate-functions.html#function_group-concat)
+    /// [Doris](https://doris.apache.org/docs/sql-manual/sql-functions/aggregate-functions/group-concat)
+    fn supports_group_concat_separator(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect supports concatenating of string literal
     /// Example: `SELECT 'Hello ' "world" => SELECT 'Hello world'`
     fn supports_string_literal_concatenation(&self) -> bool {

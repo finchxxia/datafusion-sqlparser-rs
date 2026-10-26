@@ -21180,8 +21180,7 @@ impl<'a> Parser<'a> {
             )))
         }
 
-        if dialect_of!(self is GenericDialect | MySqlDialect)
-            && self.parse_keyword(Keyword::SEPARATOR)
+        if self.dialect.supports_group_concat_separator() && self.parse_keyword(Keyword::SEPARATOR)
         {
             clauses.push(FunctionArgumentClause::Separator(self.parse_value()?));
         }
