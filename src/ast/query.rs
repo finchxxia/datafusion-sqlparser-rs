@@ -1769,6 +1769,17 @@ pub enum TableFactor {
         /// The alias for the table
         alias: Option<TableAlias>,
     },
+    /// A table factor followed by `LATERAL VIEW` clauses that belong to it.
+    ///
+    /// ```sql
+    /// SELECT * FROM t LATERAL VIEW EXPLODE_BITMAP(t.bm) tmp AS x JOIN u ON u.id = x
+    /// ```
+    LateralViews {
+        /// The table factor the lateral views are applied to.
+        relation: Box<TableFactor>,
+        /// The lateral views, in source order. Never empty.
+        lateral_views: Vec<LateralView>,
+    },
 }
 
 /// The table sample modifier options
@@ -2564,6 +2575,16 @@ impl fmt::Display for TableFactor {
                     write!(f, " {alias}")?;
                 }
 
+                Ok(())
+            }
+            TableFactor::LateralViews {
+                relation,
+                lateral_views,
+            } => {
+                write!(f, "{relation}")?;
+                for lateral_view in lateral_views {
+                    write!(f, "{lateral_view}")?;
+                }
                 Ok(())
             }
         }

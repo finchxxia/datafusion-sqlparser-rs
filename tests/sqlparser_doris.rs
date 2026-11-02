@@ -2526,3 +2526,66 @@ fn parse_doris_select_wildcard_except() {
         ))
     );
 }
+
+#[test]
+fn parse_doris_lateral_view_followed_by_join() {
+    let select = doris().verified_only_select(
+        "SELECT x, b.id FROM t AS a LATERAL VIEW EXPLODE_BITMAP(a.bm) tmp AS x JOIN b ON b.id = x LEFT JOIN c ON c.id = b.id",
+    );
+    assert!(select.lateral_views.is_empty());
+    assert_eq!(select.from.len(), 1);
+    assert_eq!(select.from[0].joins.len(), 2);
+    match &select.from[0].relation {
+        TableFactor::LateralViews {
+            relation,
+            lateral_views,
+        } => {
+            assert!(matches!(**relation, TableFactor::Table { .. }));
+            assert_eq!(lateral_views.len(), 1);
+            assert_eq!(lateral_views[0].lateral_view_name.to_string(), "tmp");
+            assert_eq!(lateral_views[0].lateral_col_alias, vec![Ident::new("x")]);
+            assert!(!lateral_views[0].outer);
+        }
+        other => panic!("expected LateralViews, got {other:?}"),
+    }
+
+    let select = doris().verified_only_select(
+        "SELECT * FROM a JOIN b LATERAL VIEW EXPLODE(b.arr) tmp AS y ON a.id = y",
+    );
+    assert!(matches!(
+        select.from[0].joins[0].relation,
+        TableFactor::LateralViews { .. }
+    ));
+
+    doris().verified_stmt(
+        "SELECT * FROM t AS a LATERAL VIEW EXPLODE(a.x) t1 AS c1 LATERAL VIEW OUTER EXPLODE(a.y) t2 AS c2 JOIN b ON b.id = c1 WHERE c2 > 1",
+    );
+    doris().verified_stmt(
+        "SELECT * FROM (SELECT 1 AS id) AS s LATERAL VIEW EXPLODE(s.id) tmp AS x CROSS JOIN b",
+    );
+    doris().verified_stmt("SELECT * FROM t LATERAL VIEW EXPLODE(t.x) tmp AS c1, c2 WHERE c1 = 1");
+    doris().verified_stmt("SELECT * FROM t LATERAL VIEW EXPLODE(t.x) tmp");
+}
+
+#[test]
+fn parse_doris_lateral_view_errors() {
+    assert_eq!(
+        doris()
+            .parse_sql_statements("SELECT * FROM t LATERAL VIEW")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: an expression, found: EOF"
+    );
+
+    // Other dialects keep collecting lateral views on the `SELECT`, so a join afterwards is rejected.
+    let generic = TestedDialects::new(vec![Box::new(GenericDialect {})]);
+    assert_eq!(
+        generic
+            .parse_sql_statements(
+                "SELECT * FROM t LATERAL VIEW EXPLODE(t.a) tmp AS x JOIN b ON b.id = x"
+            )
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: end of statement, found: JOIN"
+    );
+}

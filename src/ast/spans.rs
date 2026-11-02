@@ -2350,6 +2350,12 @@ impl Spanned for TableFactor {
                     .chain(alias.as_ref().map(|a| a.span())),
             ),
             TableFactor::OpenJsonTable { .. } => Span::empty(),
+            TableFactor::LateralViews {
+                relation,
+                lateral_views,
+            } => union_spans(
+                core::iter::once(relation.span()).chain(lateral_views.iter().map(|i| i.span())),
+            ),
         }
     }
 }

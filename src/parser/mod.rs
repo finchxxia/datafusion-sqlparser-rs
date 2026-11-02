@@ -17127,36 +17127,7 @@ impl<'a> Parser<'a> {
             (vec![], false)
         };
 
-        let mut lateral_views = vec![];
-        loop {
-            if self.parse_keywords(&[Keyword::LATERAL, Keyword::VIEW]) {
-                let outer = self.parse_keyword(Keyword::OUTER);
-                let lateral_view = self.parse_expr()?;
-                let lateral_view_name = self.parse_object_name(false)?;
-                let lateral_col_alias = self
-                    .parse_comma_separated(|parser| {
-                        parser.parse_optional_alias(&[
-                            Keyword::WHERE,
-                            Keyword::GROUP,
-                            Keyword::CLUSTER,
-                            Keyword::HAVING,
-                            Keyword::LATERAL,
-                        ]) // This couldn't possibly be a bad idea
-                    })?
-                    .into_iter()
-                    .flatten()
-                    .collect();
-
-                lateral_views.push(LateralView {
-                    lateral_view,
-                    lateral_view_name,
-                    lateral_col_alias,
-                    outer,
-                });
-            } else {
-                break;
-            }
-        }
+        let lateral_views = self.parse_lateral_views()?;
 
         let prewhere = if self.dialect.supports_prewhere() && self.parse_keyword(Keyword::PREWHERE)
         {
@@ -18340,6 +18311,59 @@ impl<'a> Parser<'a> {
     /// A table name or a parenthesized subquery, followed by optional `[AS] alias`
     #[cfg_attr(feature = "recursive-protection", recursive::recursive)]
     pub fn parse_table_factor(&mut self) -> Result<TableFactor, ParserError> {
+        let relation = self.parse_table_factor_without_lateral_views()?;
+        if !self.dialect.supports_lateral_view_in_table_factor() {
+            return Ok(relation);
+        }
+        let lateral_views = self.parse_lateral_views()?;
+        if lateral_views.is_empty() {
+            return Ok(relation);
+        }
+        Ok(TableFactor::LateralViews {
+            relation: Box::new(relation),
+            lateral_views,
+        })
+    }
+
+    /// Parse zero or more `LATERAL VIEW [OUTER] <expr> <name> [AS <col>, ...]` clauses.
+    fn parse_lateral_views(&mut self) -> Result<Vec<LateralView>, ParserError> {
+        let mut lateral_views = vec![];
+        while self.parse_keywords(&[Keyword::LATERAL, Keyword::VIEW]) {
+            let outer = self.parse_keyword(Keyword::OUTER);
+            let lateral_view = self.parse_expr()?;
+            let lateral_view_name = self.parse_object_name(false)?;
+            let lateral_col_alias = self
+                .parse_comma_separated(|parser| {
+                    parser.parse_optional_alias(&[
+                        Keyword::WHERE,
+                        Keyword::GROUP,
+                        Keyword::CLUSTER,
+                        Keyword::HAVING,
+                        Keyword::LATERAL,
+                        Keyword::JOIN,
+                        Keyword::INNER,
+                        Keyword::LEFT,
+                        Keyword::RIGHT,
+                        Keyword::FULL,
+                        Keyword::CROSS,
+                        Keyword::NATURAL,
+                    ]) // This couldn't possibly be a bad idea
+                })?
+                .into_iter()
+                .flatten()
+                .collect();
+
+            lateral_views.push(LateralView {
+                lateral_view,
+                lateral_view_name,
+                lateral_col_alias,
+                outer,
+            });
+        }
+        Ok(lateral_views)
+    }
+
+    fn parse_table_factor_without_lateral_views(&mut self) -> Result<TableFactor, ParserError> {
         let _guard = self.recursion_counter.try_decrease()?;
         if self.parse_keyword(Keyword::LATERAL) {
             // LATERAL must always be followed by a subquery or table function.
@@ -18490,6 +18514,12 @@ impl<'a> Parser<'a> {
                         TableFactor::UnpivotExpr { .. } => {
                             return Err(ParserError::ParserError(
                                 "alias after parenthesized UNPIVOT expression is not supported"
+                                    .to_string(),
+                            ))
+                        }
+                        TableFactor::LateralViews { .. } => {
+                            return Err(ParserError::ParserError(
+                                "alias after parenthesized LATERAL VIEW is not supported"
                                     .to_string(),
                             ))
                         }

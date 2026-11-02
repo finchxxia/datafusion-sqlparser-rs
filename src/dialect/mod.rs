@@ -710,6 +710,19 @@ pub trait Dialect: Debug + Any {
         false
     }
 
+    /// Returns true if `LATERAL VIEW` clauses attach to the preceding table
+    /// factor and may be followed by joins, as in Doris.
+    ///
+    /// For example
+    /// ```sql
+    /// SELECT * FROM t LATERAL VIEW EXPLODE(t.a) tmp AS x JOIN u ON u.id = x;
+    /// ```
+    ///
+    /// Otherwise they are collected on the enclosing `SELECT`.
+    fn supports_lateral_view_in_table_factor(&self) -> bool {
+        false
+    }
+
     /// Returns true if the dialect has a CONVERT function which accepts a type first
     /// and an expression second, e.g. `CONVERT(varchar, 1)`
     fn convert_type_before_value(&self) -> bool {

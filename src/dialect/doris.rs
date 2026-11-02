@@ -69,6 +69,10 @@ impl Dialect for DorisDialect {
         true
     }
 
+    fn supports_lateral_view_in_table_factor(&self) -> bool {
+        true
+    }
+
     fn parse_infix(
         &self,
         parser: &mut Parser,
