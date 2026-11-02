@@ -65,6 +65,10 @@ impl Dialect for DorisDialect {
         true
     }
 
+    fn supports_select_wildcard_except(&self) -> bool {
+        true
+    }
+
     fn parse_infix(
         &self,
         parser: &mut Parser,

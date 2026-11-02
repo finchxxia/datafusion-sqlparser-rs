@@ -2501,3 +2501,28 @@ fn parse_doris_limit_comma() {
         ))
     );
 }
+
+#[test]
+fn parse_doris_select_wildcard_except() {
+    doris().verified_stmt("SELECT * EXCEPT (a) FROM t");
+    doris().verified_stmt("SELECT * EXCEPT (a, b) FROM t");
+    doris().verified_stmt("SELECT t.* EXCEPT (a) FROM t");
+    doris().one_statement_parses_to("SELECT * EXCEPT(a) FROM t", "SELECT * EXCEPT (a) FROM t");
+    doris().verified_stmt("SELECT a FROM t1 EXCEPT SELECT a FROM t2");
+
+    assert_eq!(
+        doris()
+            .parse_sql_statements("SELECT * EXCEPT () FROM t")
+            .unwrap_err()
+            .to_string(),
+        "sql parser error: Expected: identifier, found: )"
+    );
+
+    let ansi = TestedDialects::new(vec![Box::new(AnsiDialect {})]);
+    assert_eq!(
+        ansi.parse_sql_statements("SELECT * EXCEPT (a) FROM t"),
+        Err(ParserError::ParserError(
+            "Expected: SELECT, VALUES, or a subquery in the query body, found: a".to_string()
+        ))
+    );
+}
